@@ -258,6 +258,53 @@ docs alone):
   assistant text after it**. Answer a repeated call from the transcript rather
   than re-issuing it, or the caller waits through the same round trip twice;
   three consecutive failures and the platform tells you to stop.
+- **The platform refuses a tool call carrying a value the call never
+  established**, and this is the single most common way a BYO LLM build fails.
+  It does not run the tool; it returns a `tool` message saying so and a system
+  note: "The call has not established a value for `account_ref`, and the caller
+  would not know it by heart … Do not send a value for it until that has
+  returned one. Never invent a value." An empty string counts as invented, so
+  **omit an unknown optional argument entirely** rather than sending `""`. Pass
+  values as the caller said them, or exactly as an earlier tool result returned
+  them.
+- **Pre-connect captures do reach the endpoint.** On a phone call the platform
+  runs the lookup itself and puts the result at the top of the transcript as an
+  `aai_pre_connect_context` tool result:
+  `{"variables": {"account_ref": "100200300412", "consumer_first_name": "Maria"}}`.
+  Read the values from there; they count as established, so they can be passed
+  on to other tools.
+- **A tool message is not always JSON.** A refused or failed call arrives as
+  prose with bracketed coaching text appended, so parse defensively and do not
+  report a refusal to the caller as a failure of the thing the tool does. A
+  keypad collection that ends early reads "The caller did not finish entering
+  'card_number' on their keypad (too_short), so the tool was not called", which
+  is not a declined card.
+- **Keypad-collected parameters are hidden from the endpoint.** The platform
+  strips them out of the tool schema it shows you and sets that tool's
+  `execution_mode` to `hold` itself, because it does the collecting. Send only
+  the arguments that remain.
+- **`conversation.message` with role user is visible to your endpoint**, because
+  you read the raw transcript. That makes `session.send_message(text)` followed
+  by `create_reply()` the way to drive a multi-turn test of a BYO LLM agent, and
+  those turns persist, unlike an instruction passed to `create_reply`.
+
+### Deterministic script, or a model?
+
+For a regulated script the answer is both, split by decision rather than by
+phase. Let a model do the understanding, which is what it is good at: what did
+the caller just say, which branch is this, what values did they give. Keep the
+words and the ordering in code: which line is legal next, whether a required
+disclosure has been read, whether verification passed, what gets charged. A
+model that recites a legally required sentence is a liability with no upside,
+and a keyword state machine that has to classify free speech is a stream of
+regexes that never quite closes.
+
+The seam that makes this work is that the position a caller is entitled to hear
+is settled in code, and only its delivery goes to the model: hand it the
+official wording plus what the caller actually said, and have it convey the one
+while answering the other. Keep the canned text as the fallback for when the
+model is slow or unavailable, and give the model call a timeout well inside the
+platform's ten seconds.
 
 A working endpoint, tools and replies in one service, is `byo_llm_server.py` in
 the SDK repo's `examples/`. `scripts/e2e_check.py` exercises it: with the

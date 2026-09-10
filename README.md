@@ -708,6 +708,20 @@ alone:
   answer back out of the transcript instead of asking for it again. A failed
   call comes back with coaching text appended, and after three consecutive
   failures the platform tells you to stop retrying.
+- **Arguments must be values the call established.** The platform checks each
+  one against the conversation and refuses to run the tool otherwise, returning
+  a note that says so: "The call has not established a value for `account_ref` …
+  Never invent a value." An empty string counts as invented, so omit an unknown
+  optional argument rather than sending `""`. Values the caller spoke, or that
+  an earlier tool returned, are accepted.
+- **Pre-connect captures arrive here too**, as an `aai_pre_connect_context` tool
+  result at the top of the transcript:
+  `{"variables": {"account_ref": "…", "consumer_first_name": "…"}}`.
+- **Keypad-collected parameters are hidden from you.** The platform strips them
+  from the tool schema it shows your endpoint and collects them itself. A
+  collection that ends early returns prose rather than the tool's JSON, so a
+  short entry is not a declined card.
+- A `tool` message is therefore not always JSON. Parse defensively.
 
 ## Sessions, recordings and transcripts
 
