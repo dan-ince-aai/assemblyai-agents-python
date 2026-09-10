@@ -17,15 +17,21 @@ sys.path.insert(0, os.path.dirname(__file__))
 from assemblyai_agents import Client
 from pizza_line import agent
 
-client = Client()  # reads ASSEMBLYAI_API_KEY
+def main() -> None:
+    """Deploy, and only when run: importing this must not create an agent."""
+    client = Client()  # reads ASSEMBLYAI_API_KEY
 
-agent_id = os.environ.get("AGENT_ID")
-if agent_id:
-    deployed = client.agents.update(agent_id, agent)
-    print(f"updated {deployed.id}")
-else:
-    deployed = client.agents.create(agent)
-    print(f"created {deployed.id}")
+    agent_id = os.environ.get("AGENT_ID")
+    if agent_id:
+        deployed = client.agents.update(agent_id, agent)
+        print(f"updated {deployed.id}")
+    else:
+        deployed = client.agents.create(agent)
+        print(f"created {deployed.id}")
 
-print("tools:", [t.name for t in deployed.tools or []])
-print(f"\nexport AGENT_ID={deployed.id}")
+    print("tools:", [tool.name for tool in deployed.tools or []])
+    print(f"\nexport AGENT_ID={deployed.id}")
+
+
+if __name__ == "__main__":
+    main()

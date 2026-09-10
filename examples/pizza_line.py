@@ -2,15 +2,10 @@
 
 Nothing in this module talks to the network, so it is safe to import from tests.
 
-Tools are declared once and can run in two places:
-
-* With ``PUBLIC_BASE_URL`` set (the public HTTPS address of ``server.py``), each
-  tool carries an ``http=`` config and the platform calls your backend when the
-  model invokes it. This is the production shape and the only one that works on
-  phone calls. A pre-connect request is declared the same way.
-* With ``PUBLIC_BASE_URL`` unset, the tools are *client-resident*: the model's
-  call is delivered over the WebSocket to whichever process is connected
-  (``talk.py``) and the function runs there. Handy for local development.
+Every tool carries an ``http=`` config, built from ``PUBLIC_BASE_URL``. That is
+the only arrangement that works on a phone call: the platform fetches the tool
+itself, because there is no client on the line to ask. A pre-connect request is
+declared the same way.
 """
 
 import os
@@ -34,10 +29,14 @@ ORDERS = {
 }
 
 
-def hosted(path: str) -> PlaintextHttpToolConfig | None:
-    """Point the platform at server.py, or return None to run the tool in-process."""
+def hosted(path: str) -> PlaintextHttpToolConfig:
+    """Where the platform fetches this tool from."""
     if not PUBLIC_BASE_URL:
-        return None
+        raise RuntimeError(
+            "PUBLIC_BASE_URL is unset. Every tool is fetched over HTTPS, so the "
+            "address of the process serving them has to be known before the "
+            "agent is declared."
+        )
     return PlaintextHttpToolConfig(
         url=f"{PUBLIC_BASE_URL}{path}",
         http_method=HttpMethod.POST,

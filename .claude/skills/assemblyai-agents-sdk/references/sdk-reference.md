@@ -188,7 +188,7 @@ from assemblyai_agents.byo import (
 - `digits_said(text)` — digits from figures or words, merging "forty one" into 41 and expanding "double one".
 - There is no framework here, and nothing that imports a web library. How you organise the decision, and which routes you expose, is yours; `examples/starter/flow.py` and `examples/starter/backend.py` show one way.
 
-Nothing in this package knows what a tunnel is. `examples/e2e_check.py` starts ngrok or cloudflared as a convenience and takes `--public-url` when you already have an address.
+Nothing in this package knows what a tunnel is. Tool URLs come from `PUBLIC_BASE_URL`; `examples/expose.py` is the only file that starts one, and `examples/one_file_agent.py` shows the order: address, then declaration, then deploy, then serve.
 
 ## Backend contracts
 

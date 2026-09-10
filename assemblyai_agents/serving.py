@@ -38,6 +38,12 @@ from .byo import Turn, json_body, stream
 _JSON = "application/json"
 
 
+def _print(message: str) -> None:
+    """Print and flush, because a log you cannot see until the process exits is
+    no use while a call is in progress."""
+    print(message, flush=True)
+
+
 class Refused(Exception):
     """A request that should not be answered, with the status to answer instead."""
 
@@ -171,7 +177,7 @@ def serve(
     pre_connect: Optional[Mapping[str, Callable]] = None,
     webhook_secret: Optional[str] = None,
     on_event: Optional[Callable[[dict], None]] = None,
-    log: Optional[Callable[[str], None]] = print,
+    log: Optional[Callable[[str], None]] = _print,
     background: bool = False,
 ) -> Any:
     """Answer the platform's HTTPS requests with your own functions.

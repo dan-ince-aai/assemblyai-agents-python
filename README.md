@@ -155,8 +155,9 @@ client = Client(base_url="https://agents.us.assemblyai.com")
 ## Quickstart
 
 The `examples/` directory contains the complete, runnable version of this
-walkthrough: `pizza_line.py` (the declaration), `server.py` (your backend),
-`deploy.py`, `talk.py`, `phone.py` and `e2e_check.py`.
+walkthrough: `pizza_line.py` (the declaration), `server.py` (the service),
+`deploy.py` and `phone.py`. `one_file_agent.py` is the same idea in a single
+script, and `starter/` is a fuller project to copy.
 
 ### 1. Declare the agent
 
@@ -276,48 +277,32 @@ async def main():
 asyncio.run(main())
 ```
 
-### 5. Prove the platform can reach your backend, from your laptop
+### 5. Try it
 
-You do not need a phone number or a microphone to check the whole loop. With
-[ngrok](https://ngrok.com) or [cloudflared](https://github.com/cloudflare/cloudflared)
-on your `PATH`, `examples/e2e_check.py` opens a tunnel to a local port, imports
-your declaration with `PUBLIC_BASE_URL` set to the tunnel, deploys a throwaway
-copy of the agent, opens a session, waits for the greeting, hands the model the
-line you give it as if a caller had said it, and records every request the
-platform makes to your tool endpoints:
+Run the service, point a phone number at the agent, and call it. Every tool
+call and every reply arrives in that process over HTTPS, which is the same path
+whether the caller is on a phone, on SIP, or in a browser, so there is nothing
+separate to test.
+
+`examples/one_file_agent.py` does the whole sequence in one command, including
+getting your machine an address:
 
 ```bash
-python examples/e2e_check.py --module pizza_line --path examples \
-    --utterance "Hi, what's the status of order W004?" --tool lookup_order
+export ASSEMBLYAI_API_KEY=...
+python examples/one_file_agent.py
 ```
 
 ```text
-1. opening tunnel
-   https://acaa-....ngrok-free.app  ->  http://127.0.0.1:8788
-2. importing the declaration with PUBLIC_BASE_URL set
-   POST   https://acaa-....ngrok-free.app/tools/lookup_order  ->  lookup_order()
-   POST   https://acaa-....ngrok-free.app/tools/cancel_order  ->  cancel_order()
-3. serving tools on :8788 by calling Tool.invoke
-4. deploying a throwaway copy of the agent
-5. talking to it
-   attempt 1: agent said: Your order W zero zero four has shipped and is expected on Thursday.
-
-requests the platform made through the tunnel:
-  POST /tools/lookup_order  tool=lookup_order  status=200  3 ms
-      arguments: {"order_id": "W004"}
-      headers:   {"authorization": "Bearer ***", "content-type": "application/json", ...}
-
-PASS: the platform called lookup_order on your backend through the tunnel.
-deleted agent_...
+ngrok: https://a1bf-....ngrok-free.app -> http://127.0.0.1:8000
+created agent agent_7290244bd8c6439795598a1a04332dc0
+serving 'Northwind order line' on http://0.0.0.0:8000
+POST /v1/chat/completions -> streaming
+  [tool] order_status("It's one zero four two.") -> 1042 found
 ```
 
-By default the script serves the tools itself by calling `Tool.invoke`, which
-checks the declaration and the platform contract. Add
-`--forward http://127.0.0.1:8000` to proxy the platform's requests to your own
-running backend instead, so `server.py` is what answers. The only requirement is
-that the declaration builds its tool URLs from `PUBLIC_BASE_URL`, as
-`pizza_line.py` does. The throwaway agent is deleted and the tunnel closed when
-the script exits.
+For a call you can run without picking up the phone, `examples/starter/` has a
+rehearsal harness: it runs your reply logic and your tools in the platform's own
+loop, offline, in milliseconds, and its tests are whole calls.
 
 ## Declaring tools
 
@@ -401,15 +386,14 @@ stored encrypted and never returned by the API. Pass `http_method` explicitly
 (`HttpMethod.POST`, `HttpMethod.GET`, …). The API verifies when an agent is
 created or updated that every tool and pre-connect hostname resolves in public
 DNS, so a placeholder URL is rejected; during development point the URLs at a
-tunnel (see *Prove the platform can reach your backend* above).
+tunnel (see *One file, no backend* above).
 
-A tool declared **without `http=`** is *client-resident*: the model's
-`tool.call` is delivered over the WebSocket to whichever process is connected,
-and that process runs the function and returns the result. This suits a
-desktop or browser session where the tool needs local state, and it only works
-on WebSocket sessions. A phone call has no connected client, so the SDK refuses
-to attach a phone number to a declaration that still holds client-resident
-tools. `agent.client_resident_tool_names()` tells you which tools those are.
+A tool declared **without** `http=` is a different thing, and almost certainly
+not what you want: the platform hands the call to whichever process is holding
+a WebSocket session, so the tool only exists while a browser or a desktop app
+is connected. A phone call has nobody to hand it to, and the SDK refuses to
+attach a number to an agent that still has one.
+`agent.client_resident_tool_names()` lists them.
 
 ### `ToolContext`
 
@@ -732,11 +716,17 @@ to install for it, and no service to write. If you would rather host the
 handlers in an application of your own, `routes()` from the same module returns
 them as plain callables.
 
-The address is the temporary part. `examples/expose.py` starts ngrok or
-cloudflared when `PUBLIC_BASE_URL` is not already set, and it lives in the
-examples rather than in the SDK on purpose: it is a workaround until there is
-somewhere to deploy your agent's code directly, and when that arrives this one
-function is all that changes.
+The address is the temporary part, and it is kept in one place.
+`examples/expose.py` starts ngrok when `PUBLIC_BASE_URL` is not already set,
+and it is a script in the examples rather than anything in the SDK on purpose.
+Nothing in `assemblyai_agents` knows a tunnel exists: an agent's tool URLs come
+from `PUBLIC_BASE_URL` and it does not care what put the value there. Set that
+to a staging host or a deployment and the tunnel is simply not used. When agent
+code can be deployed directly, that one function is what gets deleted.
+
+ngrok rather than cloudflared because one is enough, and cloudflared's quick
+tunnels can take minutes to resolve or never resolve at all. Swapping is a few
+lines in `expose.py`.
 
 ### A starter you can run today
 
@@ -762,23 +752,18 @@ what is behind the schema, so a decision tree, an open-weights model you host,
 or a retrieval pipeline all work the same way.
 
 ```bash
-# one service: LLM + tools + webhooks
+# one service: replies, tools and webhooks together
 TOOL_SECRET=... LLM_API_KEY=... uvicorn byo_llm_server:app --port 8000
-
-# deploy with the LLM wired to it, then prove the whole loop through a tunnel
-BYO_LLM=1 TOOL_SECRET=... LLM_API_KEY=... python examples/e2e_check.py \
-    --module pizza_line --path examples --forward http://127.0.0.1:8000 \
-    --utterance "Hi, what's the status of order W004?" --tool lookup_order
 ```
 
+On a call the platform then arrives three times per exchange: once to ask what
+to say, once to run the tool that answer asked for, and once more with the
+result.
+
 ```text
-  attempt 1: agent said: Pizza Palace, how can I help?
-  attempt 1: handing the utterance to the model
-  attempt 1: agent said: Order W 0 0 4 is shipped, expected Thursday.
-  POST /v1/chat/completions  not a tool path  status=200  32 ms
-  POST /tools/lookup_order   tool=lookup_order  status=200  29 ms
-  POST /v1/chat/completions  not a tool path  status=200  34 ms
-PASS
+POST /v1/chat/completions -> streaming
+POST /tools/lookup_order     {"order_id": "W004"}
+POST /v1/chat/completions -> streaming
 ```
 
 ### What the platform sends your endpoint
@@ -894,8 +879,7 @@ Client → server methods: `update(...)`, `send_audio(pcm_bytes)`,
 `create_reply(instructions=None)`, `cancel_reply(reply_id)`, `resume(session_id)`,
 `end()`. `send_message` appends a message to the conversation history and
 `create_reply` asks the agent to speak, optionally steered by `instructions`;
-neither is needed on a normal audio session. `examples/e2e_check.py` uses
-`create_reply(instructions=...)` after the greeting to stand in for a caller.
+neither is needed on a normal audio session.
 
 Server → client events (all pydantic models in `assemblyai_agents.models.ws`):
 

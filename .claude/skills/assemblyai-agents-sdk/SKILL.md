@@ -73,9 +73,9 @@ conventions.
    create/update time that every tool and pre-connect hostname resolves in
    public DNS (`ValidationError: … URL host … does not resolve`), so a
    placeholder cannot be deployed: during development expose the local server
-   with `ngrok http 8000` or `cloudflared tunnel --url http://127.0.0.1:8000`
-   (or let `scripts/e2e_check.py` do it) and keep the server running — a dead
-   origin shows up only as the model apologising to the caller.
+   with `ngrok http 8000` and keep it running — a dead origin shows up only as
+   the model apologising to the caller. `examples/expose.py` does that step and
+   the next section wraps the whole sequence into one command.
 
 5. **Deploy** with `client.agents.create(agent)`; print and persist the returned
    `id` (env var, `.agent_id` file, or the user's config). On later changes use
@@ -92,10 +92,9 @@ conventions.
      (`create_tool_context`, `get_tool`); tools are plain callables.
    - `client.agents.get(agent_id)` – confirm tools and pre-connect came back
      with the right URLs (header values are never echoed; that is expected).
-   - **End to end through a tunnel, no mic or phone needed**: run the bundled
-     `scripts/e2e_check.py` (see below). It is the fastest way to prove the
-     platform actually reaches the backend, and its recorded requests show the
-     exact body/headers the platform sends.
+   - Run the process and call the number. Every tool call and every reply
+     arrives there over HTTPS, and the log shows the exact body and headers the
+     platform sent, so there is nothing separate to run.
    - Rehearse the whole call offline: run the reply engine and the tools in a
      loop with no platform at all, which is what `examples/starter/rehearse.py`
      does and what its tests drive. Seconds per change, and it belongs in CI.
@@ -110,40 +109,46 @@ conventions.
    `assign_agent(..., agent=agent)` for a declaration with client-resident
    tools, because a phone call has no connected client to run them.
 
-## Proving it works: `scripts/e2e_check.py`
+## Running it: one command, your code, an address
 
-The script in this skill's `scripts/` folder needs `ngrok` (configured with an
-auth token) or `cloudflared` on `PATH`, plus `ASSEMBLYAI_API_KEY`. It opens a
-tunnel to a local port, imports the declaration with `PUBLIC_BASE_URL` set to
-the tunnel URL, deploys a throwaway copy of the agent, opens a WebSocket session
-with no device audio, waits for the greeting, hands the utterance to the model
-through `reply.create` instructions, and records every request the platform
-makes to the tool paths. Exit code 0 means the platform
-called the tool through the tunnel. The throwaway agent is deleted afterwards.
+Everything the platform needs arrives over HTTPS, so the shape is: get an
+address, deploy the declaration built against it, then serve. In that order,
+because the tool URLs have to be known before the agent is created.
 
-```bash
-python <skill-dir>/scripts/e2e_check.py --module agent --path . \
-    --utterance "I'd like to book a cleaning next Tuesday morning" --tool check_availability
-# add --forward http://127.0.0.1:8000 to route the platform's calls to the user's running server
+`assemblyai_agents.serving.serve(agent, reply=decide, tool_secret=..., llm_key=...)`
+is the serving half. It answers from the declaration — every `@tool` on it, the
+reply function, pre-connect handlers, webhooks, `/healthz` — on the standard
+library alone, so there is no framework to choose and no service to write.
+`routes()` returns the same handlers as plain callables for a project that
+already has an application.
+
+`examples/expose.py` is the address half: it starts ngrok unless
+`PUBLIC_BASE_URL` is already set. It is a script in the examples and not part
+of the SDK, because it is a workaround until agent code can be deployed
+directly, and nothing in `assemblyai_agents` knows a tunnel exists.
+
+Put together, a whole agent is one command:
+
+```python
+with public_address(PORT) as base_url:
+    os.environ["PUBLIC_BASE_URL"] = base_url   # before the declaration is built
+    agent = build(base_url)
+    agent_id = deploy(agent)
+    serve(agent, reply=decide, port=PORT, tool_secret=SECRET, llm_key=SECRET)
 ```
 
-Requirements it imposes on the declaration, so design for them from the start:
-- the module exposes `agent = VoiceAgent(...)` (or pass `--attr`) and has no
-  network side effects at import;
-- tool URLs are built from `os.environ["PUBLIC_BASE_URL"]` (a `hosted(path)`
-  helper), so pointing them at a tunnel is a matter of setting one variable;
-- the utterance clearly needs the named tool; the script retries with a fresh
-  session (`--attempts`, default 3) to absorb model variance;
-- `ASSEMBLYAI_API_KEY` and any other variable the declaration reads (for
-  example `TOOL_SECRET`) are exported; the script sets only `PUBLIC_BASE_URL`;
-- no other ngrok session is running (the free tier allows one; stop the one
-  behind a dev deployment first, or pass `--tunnel cloudflared`).
+`examples/one_file_agent.py` is that in a single file; `examples/starter/run.py`
+is the same three steps for a bigger project. Point a phone number at the agent
+id either prints and a real caller takes the identical path.
 
-Pre-connect is telephony-only and is not exercised by this check. ngrok's free
-tier serves an interstitial to browsers; the script sends the
-`ngrok-skip-browser-warning` header on its own probes and the platform is
-unaffected. If `cloudflared` never becomes reachable (its quick-tunnel DNS can
-lag for minutes on some networks) use `--tunnel ngrok`.
+Two habits that follow from this:
+
+- Print and flush from a serving process. A log that only appears when the
+  process exits is no use while a call is in progress.
+- Check a change without picking up the phone by rehearsing the call offline:
+  run the reply logic and the tools in the platform's own loop with no network,
+  as `examples/starter/rehearse.py` does and its tests drive. Milliseconds per
+  call, and it belongs in CI.
 
 ## Where a tool runs
 
@@ -372,10 +377,10 @@ How `decide` is organised is not the SDK's business. The starter shows one way,
 Reach for that shape when a call has scripted ends and a conversational middle;
 a plain function with a few branches is fine for anything smaller.
 
-Nothing in the SDK knows what a tunnel is. How the developer's machine becomes
-reachable is their choice; `examples/e2e_check.py` will start ngrok or
-cloudflared as a convenience, and takes `--public-url` when they already have
-an address.
+Nothing in the SDK knows what a tunnel is. An agent's tool URLs come from
+`PUBLIC_BASE_URL` and it does not care what set the value: a tunnel today, a
+staging host, a deployment later. `examples/expose.py` is the only file that
+starts one.
 
 ### Deterministic script, or a model?
 
@@ -402,11 +407,11 @@ loop); and deliver a settled position. `examples/starter/model.py` is those
 three, with an off switch, and every test in the starter runs with the model
 off so the fallback wording stays honest.
 
-A working endpoint, tools and replies in one service, is `byo_llm_server.py` in
-the SDK repo's `examples/`. `scripts/e2e_check.py` exercises it: with the
-backend behind `--forward`, the report shows the platform's
-`POST /v1/chat/completions`, the tool call the endpoint asked for, and the
-second completion carrying the result.
+A working endpoint, tools and replies in one process, is
+`examples/one_file_agent.py`; `examples/byo_llm_server.py` is the same idea
+against a FastAPI app if the project already has one. On a call the platform
+arrives three times per exchange: to ask what to say, to run the tool that
+answer asked for, and again with the result.
 
 ## Telephony
 
@@ -457,4 +462,4 @@ second completion carrying the result.
 - `deploy.py` that creates on first run and updates when an agent id is present.
 - Tests for the tools using `assemblyai_agents.testing`, plus one asserting on `agent.to_request()`.
 - A README snippet for the user: install line, env vars, how to deploy, how to try it.
-- One `e2e_check.py` run that ends in `PASS`, with its recorded request pasted into the report.
+- A rehearsal of each call worth caring about, offline, plus one real call once a number is attached.

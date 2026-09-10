@@ -29,14 +29,18 @@ AGENT_NAME = os.environ.get("AGENT_NAME", "Sam")
 VOICE = os.environ.get("VOICE", "ivy")
 
 
-def hosted(path: str) -> PlaintextHttpToolConfig | None:
-    """Point the platform at this backend, or None to run the tool in-process.
+def hosted(path: str) -> PlaintextHttpToolConfig:
+    """Where the platform fetches this tool from.
 
-    With PUBLIC_BASE_URL unset every tool becomes client-resident, which suits
-    a WebSocket session from a laptop but cannot answer a phone call.
+    Always over HTTPS: a phone call has no client on the line to ask, so the
+    platform calls the tool itself. `run.py` works out the address first and
+    then builds the declaration against it.
     """
     if not PUBLIC_BASE_URL:
-        return None
+        raise RuntimeError(
+            "PUBLIC_BASE_URL is unset. Run `python run.py`, which gets an "
+            "address before the declaration is built, or set it yourself."
+        )
     return PlaintextHttpToolConfig(
         url=f"{PUBLIC_BASE_URL}{path}",
         http_method=HttpMethod.POST,

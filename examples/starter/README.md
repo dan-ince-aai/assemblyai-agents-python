@@ -15,7 +15,7 @@ backend.py   serve(): the platform's requests, answered by your functions
 rehearse.py  run a whole call locally, no network
 deploy.py    create, update, show, delete
 tests/       whole calls, asserted
-run.sh       backend, address, deploy
+run.py       address, deploy, serve: one command
 ```
 
 ## Run it in two minutes, offline
@@ -41,18 +41,20 @@ account, milliseconds per call. Edit `reply.py` and run it again.
 
 ```bash
 export ASSEMBLYAI_API_KEY=...
-./run.sh                    # or set PUBLIC_BASE_URL to your own address first
-tail -f .run/backend.log    # every decision and every tool call, as they happen
+python run.py               # address, deploy, serve; Ctrl-C to stop
 ```
+
+Every decision and every tool call prints as it happens. Set
+`PUBLIC_BASE_URL` first and no tunnel is started at all.
 
 Then point a phone number at the agent id it prints and call it. The tools are
 HTTP tools, so a real call and a browser session take the same path through
 this process.
 
-`run.sh` starts the backend, works out a public address, and deploys. If
-`PUBLIC_BASE_URL` is already set it uses that and starts nothing; otherwise it
-starts ngrok as a convenience. How your machine becomes reachable is your
-choice, and nothing in the SDK has an opinion about it.
+`run.py` does three things in order: gets an address, deploys the declaration
+built against it, and serves. The only file that knows a tunnel exists is
+`../expose.py`; everything else reads `PUBLIC_BASE_URL`, so pointing that at a
+staging host or a deployment removes the tunnel with no other change.
 
 ## The idea worth keeping: stages
 
