@@ -191,6 +191,13 @@ Four things to get right, all of them learned by getting them wrong:
   notes. Also strip trailing whitespace from assistant lines and make sure the
   message list ends on a user turn, both of which a gateway will refuse.
 
+- **Rehearse a subagent with real tool schemas.** A subagent reads descriptions
+  and parameters out of `turn.request["tools"]` to decide what to offer its
+  model, so a harness that stubs them as `{"parameters": {}}` rehearses a bug:
+  the model is offered parameterless tools and calls them with no arguments.
+  Build them from `declared.spec.parameters` and `declared.spec.description`, as
+  `examples/starter/rehearse.py` does.
+
 Two habits that follow from this:
 
 - Print and flush from a serving process. A log that only appears when the
@@ -397,10 +404,15 @@ docs alone):
   strips them out of the tool schema it shows you and sets that tool's
   `execution_mode` to `hold` itself, because it does the collecting. Send only
   the arguments that remain.
-- **`conversation.message` with role user is visible to your endpoint**, because
-  you read the raw transcript. That makes `session.send_message(text)` followed
-  by `create_reply()` the way to drive a multi-turn test of a BYO LLM agent, and
-  those turns persist, unlike an instruction passed to `create_reply`.
+- **A text-injected caller turn never reaches your endpoint.** `conn.say(text)`
+  sends a `conversation.message` with role user and the platform does not put it
+  in the transcript at all — a probe agent pointed at a dumper received no
+  `user` message. Only `create_reply(instructions=…)` arrives, as a `system`
+  message, and it is gone by the next turn; `assistant` lines are what persists.
+  So a WebSocket session driven by text has no caller history: a stage needing a
+  value given two turns ago will not find it, and the model invents one. Rehearse
+  multi-turn calls offline instead. Real speech is unaffected — it arrives as
+  ordinary `user` messages.
 
 ### The `byo` module does the plumbing
 
