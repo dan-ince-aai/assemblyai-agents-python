@@ -13,7 +13,6 @@ flow.py      Stages and Memo, forty lines        <- the organising opinion
 model.py     a model for the turns a script cannot cover
 backend.py   serve(): the platform's requests, answered by your functions
 rehearse.py  run a whole call locally, no network
-drive.py     run a call against the deployed agent, no microphone
 deploy.py    create, update, show, delete
 tests/       whole calls, asserted
 run.sh       backend, address, deploy
@@ -42,10 +41,13 @@ account, milliseconds per call. Edit `reply.py` and run it again.
 
 ```bash
 export ASSEMBLYAI_API_KEY=...
-./run.sh                              # or set PUBLIC_BASE_URL to your own address first
-.venv/bin/python drive.py happy       # a scripted caller, no microphone
-tail -f .run/backend.log              # every decision and every tool call
+./run.sh                    # or set PUBLIC_BASE_URL to your own address first
+tail -f .run/backend.log    # every decision and every tool call, as they happen
 ```
+
+Then point a phone number at the agent id it prints and call it. The tools are
+HTTP tools, so a real call and a browser session take the same path through
+this process.
 
 `run.sh` starts the backend, works out a public address, and deploys. If
 `PUBLIC_BASE_URL` is already set it uses that and starts nothing; otherwise it
@@ -121,8 +123,9 @@ export MODEL=off      # or turn it off entirely; every test runs this way
    constants, and the positions you are willing to state in `POSITIONS`.
 4. **`tests/test_call.py`** — one test per whole call. They run offline, so
    there is no reason not to have a lot of them.
-5. **`rehearse.py`** — add a scenario for each call you care about. `drive.py`
-   replays the same ones against the deployed agent.
+5. **`rehearse.py`** — add a scenario for each call you care about. They run
+   offline, so the loop between changing `reply.py` and seeing a whole call is
+   about a second.
 
 ## Environment
 

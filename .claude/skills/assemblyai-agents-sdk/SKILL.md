@@ -96,12 +96,9 @@ conventions.
      `scripts/e2e_check.py` (see below). It is the fastest way to prove the
      platform actually reaches the backend, and its recorded requests show the
      exact body/headers the platform sends.
-   - Mic-less spot check: `AgentConnection(agent_id=..., audio=False)`; wait
-     for the first `on_agent_transcript` (the greeting), then
-     `await conn.session.create_reply('The caller just said: "…". Respond to the caller, calling your tools as needed.')`.
-     Do not rely on `say()` / `conversation.message`: in testing the model did
-     not see its content, and a `reply.create` sent while the greeting is still
-     playing replaces the greeting. `scripts/e2e_check.py` does exactly this.
+   - Rehearse the whole call offline: run the reply engine and the tools in a
+     loop with no platform at all, which is what `examples/starter/rehearse.py`
+     does and what its tests drive. Seconds per change, and it belongs in CI.
    - A real call: `AgentConnection` from a terminal (needs the `[audio]` extra
      and PortAudio), or a phone number.
    - When a hosted tool fails, the caller only hears an apology and the client
@@ -374,10 +371,6 @@ How `decide` is organised is not the SDK's business. The starter shows one way,
 `Stages` and `Memo` in its own `flow.py`, forty lines you can read and change.
 Reach for that shape when a call has scripted ends and a conversational middle;
 a plain function with a few branches is fine for anything smaller.
-
-`scripted_call(agent_id, lines)` from `assemblyai_agents.drive` is the matching
-test driver: it opens a real session with device audio off, sends each line as
-a user turn, and hands back a `Transcript` with `.spoken` and `.agent_lines`.
 
 Nothing in the SDK knows what a tunnel is. How the developer's machine becomes
 reachable is their choice; `examples/e2e_check.py` will start ngrok or

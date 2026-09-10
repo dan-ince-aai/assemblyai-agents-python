@@ -188,8 +188,6 @@ from assemblyai_agents.byo import (
 - `digits_said(text)` — digits from figures or words, merging "forty one" into 41 and expanding "double one".
 - There is no framework here, and nothing that imports a web library. How you organise the decision, and which routes you expose, is yours; `examples/starter/flow.py` and `examples/starter/backend.py` show one way.
 
-`assemblyai_agents.drive` — `await scripted_call(agent_id, lines, *, api_key=None, client=None, turn_timeout=45, linger=2, on_turn=None, url=None) -> Transcript`, and `call(...)` for synchronous code. `Transcript`: `.session_id .turns .errors .timed_out .agent_lines .caller_lines .spoken .ok`. Device audio is off and each line is sent as a real `user` turn, which persists and which a BYO reply engine can read.
-
 Nothing in this package knows what a tunnel is. `examples/e2e_check.py` starts ngrok or cloudflared as a convenience and takes `--public-url` when you already have an address.
 
 ## Backend contracts

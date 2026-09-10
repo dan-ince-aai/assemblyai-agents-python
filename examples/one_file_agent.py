@@ -185,8 +185,7 @@ def main() -> int:
     with public_address(PORT) as base_url:
         agent = build(base_url)
         agent_id = deploy(agent)
-        print(f"\nagent {agent_id} is live. Point a phone number at it, or:")
-        print(f"  AGENT_ID={agent_id} python drive_one_file.py\n")
+        print(f"\nagent {agent_id} is live. Point a phone number at it and call in.\n")
         # Blocks. Every tool call and every reply arrives here over HTTPS,
         # whether the caller is on a phone or a browser.
         serve(

@@ -700,15 +700,6 @@ How you organise `decide` is up to you. The starter shows one way, as forty
 lines of ordered stages in its own file, because that is an opinion and
 opinions belong in an example rather than in the SDK.
 
-For a whole call against a deployed agent, with no microphone:
-
-```python
-from assemblyai_agents.drive import scripted_call
-
-transcript = await scripted_call(agent_id, ["Hi, I need to book", "It's four four seven one"])
-assert "booked in for" in transcript.spoken
-```
-
 ### One file, no backend
 
 Everything the platform needs from you arrives over HTTPS, and it has to: a

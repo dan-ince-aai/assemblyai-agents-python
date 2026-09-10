@@ -69,4 +69,4 @@ for _ in $(seq 1 20); do curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null &&
 $PY deploy.py
 echo
 echo "backend log: $RUN_DIR/backend.log   (tail -f it while you call)"
-echo "next: $PY drive.py happy"
+echo "next: point a phone number at the agent id above and call it"
