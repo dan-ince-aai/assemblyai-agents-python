@@ -43,10 +43,12 @@ with public_address(PORT) as base_url:      # examples/expose.py: ngrok
     serve(agent, reply=decide, port=PORT)   # blocks; the platform calls in
 ```
 
-`examples/starter/` is the same three steps in `run.py`, around a project with
-`store.py` (the system of record), `agent.py` (tools and declaration),
-`reply.py` (the call flow), `flow.py` (stage machinery), `rehearse.py` (a whole
-call offline) and tests. Change those four files in that order.
+`examples/starter/` is the same three steps in `run.py`, around a project. Four
+files are the ones to change, in this order: `store.py` (the system of record,
+mocked — point it at the real services), `agent.py` (tools and declaration),
+`reply.py` (the call flow), `model.py` (the few turns a script cannot decide).
+`flow.py` holds the stage machinery, `rehearse.py` plays a whole call offline,
+and `tests/` asserts on whole calls. Its `AGENTS.md` says the same in place.
 
 ## Workflow
 
