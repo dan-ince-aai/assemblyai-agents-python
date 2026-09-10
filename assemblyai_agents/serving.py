@@ -262,7 +262,17 @@ def serve(
             except (BrokenPipeError, ConnectionResetError):
                 pass  # the platform hung up mid-answer, which is its business
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    try:
+        server = ThreadingHTTPServer((host, port), Handler)
+    except OSError as exc:
+        # Almost always a previous run that is still holding the port. Said
+        # plainly here, because the stock message is `[Errno 48] Address already
+        # in use` and the next thing anyone does is guess.
+        raise OSError(
+            f"cannot serve on {host}:{port}: {exc}. Something else is holding it — "
+            f"usually an earlier run of this script. Stop it (`lsof -ti :{port} | "
+            f"xargs kill`), or set PORT to a free one."
+        ) from exc
     note(f"serving {agent.name!r} on http://{host}:{port} — {', '.join(sorted(r[1].pattern for r in table))}")
     if background:
         threading.Thread(target=server.serve_forever, daemon=True).start()

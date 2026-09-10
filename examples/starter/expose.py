@@ -67,6 +67,15 @@ def public_address(port: int, *, log=lambda message: print(message, flush=True))
         yield already
         return
 
+    running = _address(port)
+    if running:
+        # A tunnel for this port is already up, from an earlier run whose cleanup
+        # did not get to finish. Starting a second one fails anyway: a free
+        # account allows one at a time. Reuse it instead of failing on it.
+        log(f"reusing the ngrok tunnel already on port {port}: {running}")
+        yield running.rstrip("/")
+        return
+
     if not shutil.which("ngrok"):
         raise RuntimeError(
             "ngrok is not on PATH. Either install it and run "
@@ -97,9 +106,16 @@ def public_address(port: int, *, log=lambda message: print(message, flush=True))
         log(f"ngrok: {url} -> http://127.0.0.1:{port}")
         yield url.rstrip("/")
     finally:
+        # ngrok ignores SIGTERM while it is serving a request, and an ngrok left
+        # running blocks the next run on a free account, so this escalates rather
+        # than hoping.
         process.terminate()
         try:
             process.wait(5)
         except Exception:
             process.kill()
+            try:
+                process.wait(5)
+            except Exception:
+                log(f"ngrok (pid {process.pid}) would not stop; kill it before the next run")
         handle.close()
