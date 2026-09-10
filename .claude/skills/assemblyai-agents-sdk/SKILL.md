@@ -149,6 +149,31 @@ a strong enough guarantee for what has to be said: on a test call the tools-only
 agent looked a value up correctly and then answered a different question, which
 is fine for a shop and not fine for a disclosure.
 
+### Subagents, when one prompt is doing too much
+
+`examples/subagents.py` routes a call between stages, each with its own model,
+prompt and allowed tools: a cheap model to check who is on the line, a stronger
+one for the conversation, the strongest only when it goes wrong. Reach for it
+when the user describes stages, or wants to control cost, or wants a stage that
+provably cannot do certain things.
+
+Four things to get right, all of them learned by getting them wrong:
+
+- **Handing over is not a config change.** With `llm=` pointing at their code,
+  a handover is choosing a different model and prompt for the next turn.
+  `session.update` exists but is a WebSocket message, so it is unavailable on a
+  phone call.
+- **The allowlist is enforced in their code**, because the platform runs
+  whatever tool call it is handed. Offer each stage only its own tool schemas
+  *and* refuse an out-of-scope call if one comes back.
+- **A subagent prompt replaces the platform's**, and with it the spoken-output
+  guidance the platform normally appends. Put those rules in every subagent
+  prompt or a model will emit markdown into speech.
+- **Do not forward one model's tool history to another** that was not given
+  those tools; it is rejected. Flatten prior calls and results into plain
+  notes. Also strip trailing whitespace from assistant lines and make sure the
+  message list ends on a user turn, both of which a gateway will refuse.
+
 Two habits that follow from this:
 
 - Print and flush from a serving process. A log that only appears when the

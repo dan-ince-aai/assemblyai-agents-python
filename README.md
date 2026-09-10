@@ -695,6 +695,10 @@ opinions belong in an example rather than in the SDK.
 | Shaped by | the system prompt | your code |
 | Example | `examples/tools_only_agent.py` | `examples/one_file_agent.py` |
 
+Once you decide the replies, a third shape opens up:
+`examples/subagents.py` splits the call into stages and gives each its own
+model, prompt and tool list.
+
 Start with tools only. Move to your own replies when a prompt is not a strong
 enough guarantee: a disclosure that has to be read word for word, a fixed order
 of steps, an amount that must come from a ledger rather than from a sentence.
@@ -743,6 +747,56 @@ code can be deployed directly, that one function is what gets deleted.
 ngrok rather than cloudflared because one is enough, and cloudflared's quick
 tunnels can take minutes to resolve or never resolve at all. Swapping is a few
 lines in `expose.py`.
+
+### Subagents: a different model per stage
+
+A call is not one job. Checking who is on the line is narrow and scripted;
+talking someone through a booking is not; a complaint is different again. One
+model and one prompt means paying for the hardest turn on every turn.
+
+`examples/subagents.py` routes between stages, each with its own model, prompt
+and allowed tools:
+
+| Stage | Model | May call |
+| --- | --- | --- |
+| `authenticate` | `claude-haiku-4-5` | `verify_caller` |
+| `booking` | `claude-sonnet-4-6` | `find_appointments`, `book_appointment` |
+| `recovery` | `claude-opus-5` | `find_appointments`, `escalate` |
+| `wrap_up` | `claude-haiku-4-5` | nothing |
+
+A real call through it:
+
+```text
+[authenticate · claude-haiku-4-5] -> "Can you give me the four digit reference?"
+[authenticate · claude-haiku-4-5] -> verify_caller
+  [tool] verify_caller('4471', 'Maria Delgado') -> True
+[booking · claude-sonnet-4-6]     -> find_appointments
+[booking · claude-sonnet-4-6]     -> "We have Friday at nine, or Friday at half past eleven."
+[booking · claude-sonnet-4-6]     -> book_appointment
+[wrap_up · claude-haiku-4-5]      -> "You're all booked in. Your confirmation is R zero zero one."
+```
+
+Three things that example exists to make clear:
+
+- **Handing over is not a config change.** With `llm=` pointing at your code,
+  a handover is choosing a different model and prompt for the next turn.
+  Nothing is redeployed and the platform is not told. `session.update` can
+  change a live session, but it is a WebSocket message and a phone call has no
+  client to send one.
+- **The tool allowlist is yours to enforce.** The platform runs whatever tool
+  call it is handed, so `authenticate` cannot book an appointment because the
+  router refuses to pass such a call on. Each stage is also only *offered* its
+  own tools, so the model rarely tries.
+- **A subagent prompt replaces the platform's**, including the spoken-output
+  guidance it normally appends. Put that back yourself or a model writes for a
+  screen: the booking stage offered "**Friday at nine**", asterisks and all,
+  until it was told it was on a phone.
+
+Two smaller things, both found by a gateway refusing the request: the
+platform's spoken lines come back with a trailing space, which an assistant
+message may not end with, and prior tool calls cannot be forwarded to a
+subagent that was not given those tools. The example flattens tool history into
+plain notes, which sidesteps both and reads better anyway.
 
 ### A starter you can run today
 
