@@ -1,8 +1,16 @@
 # `assemblyai-agents` API reference
 
-Everything below is importable from `assemblyai_agents` unless a fuller path is
-shown. Generated request/response models live in `assemblyai_agents.models.rest`
-(REST) and `assemblyai_agents.models.ws` (WebSocket events).
+The names in *Clients*, *VoiceAgent*, *@tool* (`tool`, `Tool`, `ToolContext`),
+*Audio config*, *Telephony helpers*, *Realtime* (`AgentConnection`,
+`AsyncRealtimeSession`, `ToolRouter`, `UnknownEvent`), *Webhook verification*,
+*Exceptions* and *Audio helpers* are top-level exports of `assemblyai_agents`.
+Every request/response model and enum — `PlaintextHttpToolConfig`,
+`HttpToolHeaderInput`, `HttpMethod`, `ResponseInstructions`,
+`DtmfCollectionProfile`, `ExecutionMode`, `*Request`, `*Response`, `NumberType`,
+`WebhookEvent`, … — lives in `assemblyai_agents.models.rest` (only
+`AgentCreateRequest`, `AgentUpdateRequest`, `LlmConfigRequest`,
+`PlaintextToolDefinition` and `VoiceConfig` are also re-exported at top level).
+WebSocket event models live in `assemblyai_agents.models.ws`.
 
 Contents: [Install](#install) · [Clients](#clients) · [VoiceAgent](#voiceagent) ·
 [@tool](#tool) · [Audio config](#audio-config) · [Telephony helpers](#telephony-helpers) ·
@@ -50,7 +58,8 @@ VoiceAgent(*, name: str, system_prompt: str, voice: str,
 - Checks at construction: unique tool names; pre-connect ordering/limits; transfers need `outbound_trunk_id`; `caller_id` E.164.
 - `to_request() -> AgentCreateRequest`, `to_update_request() -> AgentUpdateRequest` (whole declaration; PUT replaces).
 - `tool_definitions()`, `pre_connect_requests()`, `wire_transfer_targets()`, `client_resident_tool_names() -> tuple[str, ...]` (tools with no `http=`).
-- `voice`: an AssemblyAI voice name, e.g. `"ivy"` (verified), `"james"`, `"mia"`. A 422 `ValidationError` names an unknown voice.
+- `voice`: an AssemblyAI voice name, e.g. `"ivy"` (verified), `"james"`, `"mia"`. A 422 `ValidationError` names an unknown voice. On the wire it is `VoiceConfig(voice_id=voice)` (`AgentCreateRequest.voice.voice_id`, `AgentResponse.voice.voice_id`), so pin payloads with `VoiceConfig(voice_id="ivy")`, not `"ivy"`.
+- Every tool/pre-connect URL host must resolve in public DNS at create/update time (`ValidationError` "URL host … does not resolve"); `agents.create` does accept a declaration whose tools are all client-resident.
 - `llm`: `LlmConfigRequest(base_url, model, api_key)` – any OpenAI-compatible chat-completions endpoint; sent as a one-element list.
 
 ## @tool
@@ -67,11 +76,11 @@ Rules (violations raise `ConfigurationError` at decoration):
 - every parameter type-hinted; supported `str int float bool list[T] dict[str, T] Literal[...] Enum Optional[T] BaseModel`; nested models inlined; recursive or >32-deep models refused; no `*args/**kwargs/positional-only`.
 - return annotation required: `dict list str int float bool None BaseModel` (or `Optional`/`Union` of those).
 - `timeout_seconds` int 1–300. `execution_mode`: only `ExecutionMode.interactive` (hold refused in v1).
-- `http`: `PlaintextHttpToolConfig(url: str, http_method: HttpMethod = POST, headers: list[HttpToolHeaderInput] | None)`; `HttpToolHeaderInput(name, value)`; `HttpMethod.GET|POST|PUT|PATCH|DELETE`.
+- `http`: `PlaintextHttpToolConfig(url: str, http_method: HttpMethod | None, headers: list[HttpToolHeaderInput] | None)`; `HttpMethod.GET|POST|PUT|PATCH|DELETE` is a plain `Enum` (not `str`) — pass it explicitly, because an omitted `http_method` stays the bare string `"POST"`, which serialises with a pydantic warning and compares unequal to `HttpMethod.POST`. `HttpToolHeaderInput(name, value=None, remove=False)`; read-back headers come as `{name, last_set_at}` (values never returned). A tool with no parameters is fine (`properties: {}`; the platform POSTs `{}`).
 - `response_instructions`: `ResponseInstructions(success: str ≤500, error: str ≤500)`.
 - `dtmf_collected_arguments`: `[DtmfCollectionProfile(parameter_name, min_digits, max_digits, prompt, sensitive=None, terminator="#", confirm=None, timeout_seconds=None, escalate_hotkey_disabled=None)]` – phone only.
 
-`Tool` object: `tool.name`, `tool.spec` (`ToolSpec`: name, description, parameters (JSON schema), timeout_seconds, execution_mode, response_instructions, http, dtmf_collected_arguments, context_parameter, is_async, target), `tool.definition() -> PlaintextToolDefinition`, `await tool.invoke(context=None, **arguments)` (sync targets run in a thread; injects context into the `ToolContext` parameter), `tool(*args, **kwargs)` calls the raw function.
+`Tool` object: `tool.name`, `tool.spec` (`ToolSpec`: name, description, parameters (JSON schema), timeout_seconds, execution_mode, response_instructions, http, dtmf_collected_arguments, context_parameter, is_async, target), `tool.definition() -> PlaintextToolDefinition`, `await tool.invoke(context=None, **arguments)` (sync targets run in a thread; injects `context` into the `ToolContext` parameter — **required** when the function declares one, otherwise `TypeError: missing … 'ctx'`), `tool(*args, **kwargs)` calls the raw function (returns a coroutine for an async function, a value for a sync one).
 
 `ToolContext` (Protocol): `http` (async client with `.get/.post/.request(...)` returning objects with `.status_code .headers .text .json()`), `log` (`.debug/.info/.warning/.error(event, **fields)`), `session_id: str`, `aborted: bool`, `secret(name) -> str`. Constants: `RESPONSE_LIMIT_BYTES = 1 MiB`, `HTTP_TIMEOUT_SECONDS = 15`.
 
@@ -111,7 +120,7 @@ All `body` arguments are pydantic models from `assemblyai_agents.models.rest`.
 | Resource | Methods |
 | --- | --- |
 | `agents` | `create(VoiceAgent \| AgentCreateRequest) -> AgentResponse`; `get(id)`; `list(limit=, cursor=) -> pager[AgentListItem]`; `update(id, VoiceAgent \| AgentUpdateRequest)`; `delete(id)` |
-| `sessions` | `list(limit=, cursor=, status=, agent_id=) -> pager[SessionListItem]`; `get(id) -> SessionResponse` (`status, public_close_reason, duration_seconds, config, artifacts[]`); `delete(id)`; **async only** `connect(token=None, url=None, open_timeout=15.0, auto_resume=False, max_resume_attempts=5) -> AsyncRealtimeSession` |
+| `sessions` | `list(limit=, cursor=, status=, agent_id=) -> pager[SessionListItem]`; `get(id) -> SessionResponse` (`status`, `public_close_reason` e.g. `client_end`, `duration_seconds`, `config`, `artifacts[]` of `SessionArtifact(type, url, content_type)` — `audio` (audio/ogg), `timeline` (JSON: the turns, each with a `trigger` such as `reply_create` or `tool_result`) and `metadata` (JSON), as presigned URLs once the session completes); `delete(id)`; **async only** `connect(token=None, url=None, open_timeout=15.0, auto_resume=False, max_resume_attempts=5) -> AsyncRealtimeSession` |
 | `calls` | `list(limit=, cursor=, status: CallStatus=, direction: CallDirection=)`; `create(CreateCallRequest(from_number, to_number)) -> CallResponse(id, status)` (idempotent); `get(id) -> CallGetResponse`; `delete(id)` |
 | `phone_numbers` | `list(limit=, cursor=) -> pager[PhoneNumberResponse]`; `purchase_available(PurchaseAvailablePhoneNumberRequest(country_code, number_type: NumberType.local\|mobile\|national, area_code=, locality=, label=, agent_id=)) -> PhoneNumberResponse`; `purchase(PurchasePhoneNumberRequest(phone_number))`; `import_(ImportPhoneNumberRequest(phone_number, termination_uri=))`; `get(number)`; `deregister(number)`; `assign_agent(number, PhoneNumberAssignAgentRequest(agent_id), *, agent: VoiceAgent | None)`; `unassign_agent(number)` |
 | `tokens` | `create(TokenCreateRequest(expires_in_seconds=60 (1–600)) \| None) -> TokenResponse(token, expires_at)` |
@@ -135,7 +144,8 @@ AgentConnection(*, agent_id: str, api_key=None, client: AsyncClient | None = Non
 - `await conn.run()` – the single read loop; returns on `session.ended`. With `audio=True` starts mic capture + speaker playback (needs `[audio]`); with `audio=False` you get `reply.audio` via `on_agent_audio`.
 - Callbacks (decorator or direct call, sync or async): `on_ready(SessionReady)`, `on_user_transcript(str)`, `on_agent_transcript(str)`, `on_agent_delta(str)`, `on_agent_audio(ReplyAudio)`, `on_error(SessionError)`.
 - `conn.tool(name)` decorator registers a client-resident handler; `tools={name: fn}` does the same. Handlers get `**arguments`; return value is `str()`-ed back; exceptions are sent as tool errors.
-- `await conn.say(text)` sends a `conversation.message` (role user). `conn.session` exposes the underlying `AsyncRealtimeSession`.
+- `await conn.say(text)` sends a `conversation.message` (role user), which only appends to the history; follow it with `await conn.session.create_reply()` to make the agent respond. `conn.session` exposes the underlying `AsyncRealtimeSession`.
+- A bad `agent_id` does not raise from `async with conn:`; `on_error` receives `SessionError(code=agent_not_found)` and the next send raises `websockets.exceptions.ConnectionClosedError` (1008).
 - Mic failure ends the session and raises `DeviceAudioError` with guidance.
 
 ### `AsyncRealtimeSession`
@@ -158,7 +168,7 @@ Wire audio: 16-bit little-endian mono PCM, 24 kHz (`audio/pcm`); telephony encod
 
 ## Backend contracts
 
-- **HTTP tool** – platform → your URL with the tool's configured headers. `POST/PUT/PATCH`: JSON body = the arguments object (`{"order_id": "W004"}`); `GET/DELETE`: arguments as query parameters. Respond with JSON (any shape) within `timeout_seconds`; it is stringified for the model. Non-2xx / timeout ⇒ the model is told the tool failed (and `response_instructions.error` applies).
+- **HTTP tool** – platform → your URL with the tool's configured headers (observed `User-Agent: Python/3.13 aiohttp/…`). `POST`/`PUT`/`PATCH`: JSON body = the arguments object (`{"order_id": "W004"}`, `{}` for a no-parameter tool); `GET`/`DELETE`: arguments as query parameters. Respond with JSON (any shape) within `timeout_seconds`; it is stringified for the model. Non-2xx / timeout ⇒ the model is told the tool failed (and `response_instructions.error` applies); the client sees no error, only the apology. Hostnames are DNS-checked when the agent is created/updated.
 - **Pre-connect** (phone calls only) – platform → `PreConnectRequest.url` with `method` and `headers`, before the call is answered; must answer within `timeout_ms` (≤ 800 ms). Body carries values named in `sends`. Response JSON: values at `Captured.path`; top-level `greeting` (needs `allow_overrides=True`) overrides the greeting; top-level `reject: true` aborts the call. Any failure ⇒ proceed without values.
 - **Webhook** – platform → subscription `url`, `POST`, header `X-AAI-Signature: t=<unix>,v1=<hex hmac-sha256(secret, f"{t}." + raw_body)>`. Verify with `verify()` below; respond 2xx.
 
@@ -185,7 +195,7 @@ ctx.http.calls            # [RecordedCall(method, url, headers, json, params)] �
 ctx.log.records           # [LogRecord(level, event, fields)]
 ctx.secret("orders_api_key")
 tool = get_tool(agent, "lookup_order")      # the Tool from agent.tools, by wire name
-await tool(order_id="W004", ctx=ctx)         # or await tool.invoke(context=ctx, order_id="W004")
+await tool.invoke(context=ctx, order_id="W004")   # works for sync and async tools; tool(...) is the raw function
 ```
 Pin payloads with `assert agent.to_request() == AgentCreateRequest(...)` or `agent.to_request().model_dump(mode="json", exclude_none=True)`.
 
@@ -213,7 +223,12 @@ async def run_tool(name: str, request: Request):
         raise HTTPException(401)
     if name not in TOOLS:
         raise HTTPException(404)
-    return await TOOLS[name].invoke(**await request.json())
+    try:
+        # Tools here take model arguments only. If one declares a ToolContext
+        # parameter, pass your own object as invoke(context=..., **args).
+        return await TOOLS[name].invoke(**await request.json())
+    except TypeError as exc:            # unexpected or missing argument
+        raise HTTPException(422, str(exc))
 
 @app.post("/pre-connect/whois")
 async def whois(request: Request):

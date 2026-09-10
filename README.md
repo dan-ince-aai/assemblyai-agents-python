@@ -396,7 +396,11 @@ that HTTPS endpoint itself, so it works for phone calls and for any client.
 `GET`/`DELETE` send the arguments as query parameters; `POST`/`PUT`/`PATCH` send
 them as a JSON body. The response body is handed to the model as the result.
 Header values (for example an `Authorization` header your backend checks) are
-stored encrypted and never returned by the API.
+stored encrypted and never returned by the API. Pass `http_method` explicitly
+(`HttpMethod.POST`, `HttpMethod.GET`, …). The API verifies when an agent is
+created or updated that every tool and pre-connect hostname resolves in public
+DNS, so a placeholder URL is rejected; during development point the URLs at a
+tunnel (see *Prove the platform can reach your backend* above).
 
 A tool declared **without `http=`** is *client-resident*: the model's
 `tool.call` is delivered over the WebSocket to whichever process is connected,
@@ -412,9 +416,10 @@ A tool may declare one parameter annotated `ToolContext`. It is recognised by
 annotation, not by name, and is excluded from the schema. The context offers
 `http` (an async HTTP client), `log`, `session_id`, `aborted` and
 `secret(name)`. Supply your own object satisfying the protocol when serving the
-tool (`tool.invoke(context=ctx, **arguments)`); the `testing` module ships an
-offline double. Handlers routed through `AgentConnection(tools=...)` receive
-the model's arguments only.
+tool (`tool.invoke(context=ctx, **arguments)`); calling `invoke` without
+`context=` on a tool that declares one raises `TypeError`. The `testing` module
+ships an offline double. Handlers routed through `AgentConnection(tools=...)`
+receive the model's arguments only.
 
 ## Pre-connect requests
 
@@ -641,7 +646,19 @@ for s in client.sessions.list(agent_id=deployed.id, status="completed"):
 
 session = client.sessions.get("sess_...")
 for artifact in session.artifacts or []:
-    print(artifact)   # recordings and transcripts produced by the session
+    print(artifact.type, artifact.content_type, artifact.url)
+```
+
+Once a session completes it carries three artifacts as presigned URLs: `audio`
+(an Ogg recording), `timeline` (JSON: every turn with what triggered it, such as
+`reply_create` or `tool_result`, which is the place to look when a tool call
+went wrong) and `metadata` (JSON).
+
+```python
+# a failed hosted tool never surfaces on the client; the timeline shows it
+import httpx
+timeline = next(a for a in session.artifacts if a.type == "timeline")
+print(httpx.get(timeline.url).json())
 ```
 
 ## The realtime WebSocket
@@ -691,7 +708,8 @@ asyncio.run(main())
 Client → server methods: `update(...)`, `send_audio(pcm_bytes)`,
 `send_tool_result(call_id, result, is_error=False)`, `send_message(text, role="user")`,
 `create_reply(instructions=None)`, `cancel_reply(reply_id)`, `resume(session_id)`,
-`end()`.
+`end()`. `send_message` only appends to the conversation history; call
+`create_reply()` afterwards to have the agent respond to it.
 
 Server → client events (all pydantic models in `assemblyai_agents.models.ws`):
 
@@ -793,7 +811,7 @@ async def test_lookup_order():
     ctx = create_tool_context(secrets={"orders_api_key": "test-key"})
     ctx.http.stub("GET", "https://api.pizzapalace.com/orders/W004", json={"status": "shipped"})
 
-    result = await get_tool(agent, "lookup_order")(order_id="W004", ctx=ctx)
+    result = await get_tool(agent, "lookup_order").invoke(context=ctx, order_id="W004")
 
     assert result == {"status": "shipped"}
     assert ctx.http.calls[0].headers["authorization"] == "test-key"

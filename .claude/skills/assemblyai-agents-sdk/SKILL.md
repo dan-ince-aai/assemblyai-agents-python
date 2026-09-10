@@ -27,6 +27,8 @@ this file covers the workflow and the decisions.
    (or where it lives) rather than guessing; never write a key into source.
    Default host is `https://agents.assemblyai.com`; `https://agents.us.assemblyai.com`
    is the US deployment. Resources live per host, so pick one and stay on it.
+   Agent ids are disjoint across hosts and the same *names* exist on both, so
+   persist the id and never look an agent up by name.
 
 2. **Decide where each tool runs** before writing code (see the next section).
 
@@ -38,18 +40,26 @@ this file covers the workflow and the decisions.
    declared: one `POST /tools/{name}` route that authorises the request and
    calls `TOOLS[name].invoke(**arguments)`, one route per pre-connect URL, and
    a webhook route that calls `verify()` on the raw body. FastAPI is the natural
-   fit but any framework works. Ask the user for the public HTTPS base URL (or
-   suggest a tunnel for development) and read it from an environment variable.
+   fit but any framework works. Ask the user for the public HTTPS base URL and
+   read it from an environment variable (`PUBLIC_BASE_URL`). The API checks at
+   create/update time that every tool and pre-connect hostname resolves in
+   public DNS (`ValidationError: … URL host … does not resolve`), so a
+   placeholder cannot be deployed: during development expose the local server
+   with `ngrok http 8000` or `cloudflared tunnel --url http://127.0.0.1:8000`
+   (or let `scripts/e2e_check.py` do it) and keep the server running — a dead
+   origin shows up only as the model apologising to the caller.
 
 5. **Deploy** with `client.agents.create(agent)`; print and persist the returned
    `id` (env var, `.agent_id` file, or the user's config). On later changes use
    `client.agents.update(agent_id, agent)`, which sends the whole declaration
    because the endpoint replaces the stored agent. Do not create a new agent on
-   every run.
+   every run. If `update()` raises `NotFoundError`, the stored agent is gone:
+   create again and overwrite the stored id.
 
 6. **Verify** in this order, cheapest first:
-   - `python -c "from agent import agent; print(agent.to_request().model_dump(exclude_none=True))"`
-     – a `ConfigurationError` here names the exact rule broken.
+   - `python -c "from agent import agent; r = agent.to_request(); print([t.name for t in r.tools or []], [p.http.url for p in r.pre_connect_requests or []])"`
+     – a `ConfigurationError` here names the exact rule broken. (A full
+     `model_dump()` also prints the tool header secrets, so avoid it in logs.)
    - Unit-test the tool functions with `assemblyai_agents.testing`
      (`create_tool_context`, `get_tool`); tools are plain callables.
    - `client.agents.get(agent_id)` – confirm tools and pre-connect came back
@@ -58,8 +68,15 @@ this file covers the workflow and the decisions.
      `scripts/e2e_check.py` (see below). It is the fastest way to prove the
      platform actually reaches the backend, and its recorded requests show the
      exact body/headers the platform sends.
+   - Mic-less spot check: `AgentConnection(agent_id=..., audio=False)`; in
+     `on_ready`, `await conn.say(text)` **then** `await conn.session.create_reply()`
+     — `say()` alone only appends to the history and nothing is spoken.
    - A real call: `AgentConnection` from a terminal (needs the `[audio]` extra
      and PortAudio), or a phone number.
+   - When a hosted tool fails, the caller only hears an apology and the client
+     sees no error: read the server/tunnel logs and
+     `client.sessions.get(session_id).artifacts` (the `timeline` artifact lists
+     each turn with its `trigger`, e.g. `tool_result`).
 
 7. **Attach a phone number** only after every tool has `http=`: the SDK refuses
    `assign_agent(..., agent=agent)` for a declaration with client-resident
@@ -102,6 +119,19 @@ lag for minutes on some networks) use `--tunnel ngrok`.
 | with `http=PlaintextHttpToolConfig(url=..., http_method=..., headers=[...])` | the user's backend; platform POSTs/GETs the arguments | phone and WebSocket | production, anything that touches the user's data |
 | without `http=` (client-resident) | the process holding the WebSocket, via `AgentConnection(tools={name: fn})` | WebSocket only | local development, desktop/browser sessions needing local state |
 
+`PlaintextHttpToolConfig`, `HttpToolHeaderInput`, `HttpMethod`,
+`ResponseInstructions`, `DtmfCollectionProfile`, `ExecutionMode`,
+`LlmConfigRequest` and the other request models are **not** top-level exports:
+
+```python
+from assemblyai_agents import VoiceAgent, tool, ToolContext, Captured, Header, PreConnectRequest, HumanTransfer
+from assemblyai_agents.models.rest import HttpMethod, HttpToolHeaderInput, PlaintextHttpToolConfig, ResponseInstructions
+```
+
+Always pass `http_method=HttpMethod.POST` (or `GET`) explicitly: `HttpMethod` is
+a plain `Enum`, and the field's default is the bare string `"POST"`, which
+serialises with a pydantic warning and compares unequal to the enum.
+
 Default to `http=` tools for anything the user would ship. A handy pattern is a
 `hosted(path)` helper that returns the HTTP config when `PUBLIC_BASE_URL` is set
 and `None` otherwise, so the same declaration runs client-resident on a laptop
@@ -127,9 +157,12 @@ server would reject, at import time. The rules, and why they exist:
 - `execution_mode` only `interactive` in v1. `response_instructions` adds static
   wording after success/error. `dtmf_collected_arguments` reads a parameter from
   the phone keypad (card numbers, account IDs).
-- A parameter annotated `ToolContext` is injected, not part of the schema. Only
-  use it when the tool is run through `Tool.invoke(context=...)` (your backend
-  or the testing double); `AgentConnection` passes model arguments only.
+- A parameter annotated `ToolContext` is injected, not part of the schema, and
+  only when the caller passes `context=` to `Tool.invoke`; `invoke(**arguments)`
+  without it raises `TypeError`. The SDK ships no production context object
+  (only the testing double), so for hosted tools either leave `ToolContext` out
+  or build your own object satisfying the protocol in `/tools/{name}`.
+  `AgentConnection` passes model arguments only.
 
 Prompt guidance for `system_prompt`: spoken output, so short sentences, no
 markdown, no lists; state when to call each tool by name; tell it what to do
@@ -175,8 +208,11 @@ when a lookup fails. `VoiceAgent` dedents the prompt, so indent freely.
 | `... holds client-resident tools ... only a WebSocket session can answer` | Give the tool an `http=` config before attaching a phone number. |
 | `transfer targets ... need an outbound_trunk_id` | Set `outbound_trunk_id` on the agent. |
 | `pre-connect url=... is not https` | Pre-connect and tool URLs must be `https://`. |
+| `ValidationError: … URL host … does not resolve` on create/update | Tool and pre-connect hostnames must resolve in public DNS: use a tunnel URL, not a placeholder. |
 | `AuthenticationError: Unauthorized` | Wrong or missing `ASSEMBLYAI_API_KEY`, or the key belongs to the other regional host. |
-| `NotFoundError agent_not_found` on the WebSocket | Agent was created on the other host, or was deleted. |
+| `on_error` receives `SessionError(code=agent_not_found)`, then the next send raises `ConnectionClosedError` 1008 | The agent lives on the other regional host or was deleted; `async with conn:` itself does not raise. Redeploy and store the new id. |
+| `say()` produces silence | Follow it with `await conn.session.create_reply()`. |
+| The agent apologises that it cannot access the system | Your tool endpoint was unreachable, slow, or non-2xx. Check the tunnel/server logs and the session's `timeline` artifact. |
 | `DeviceAudioNotInstalledError` | `pip install "assemblyai-agents[audio] @ git+..."` after installing PortAudio. |
 | Model never calls the tool | Sharpen the docstring's first paragraph and say in the system prompt when to call it. |
 
