@@ -285,8 +285,19 @@ server would reject, at import time. The rules, and why they exist:
   object satisfying the protocol in `/tools/{name}`. `AgentConnection` passes
   model arguments only.
 
+- **A handler will be called with a placeholder sooner or later.** A model
+  that has not been told the value asks for it anyway: a live call reached
+  `find_policy(policy_number="policy number")`, the parameter's own description
+  echoed back as its value. Validate in the handler and return a refusal the
+  model can read (`{"found": false, "ask": "read me the policy number"}`),
+  rather than treating the string as data. `serving.Refused(message)` does the
+  same for anything that should not have been called at all. The platform's own
+  guard catches some of these on a `llm=` agent, but it is not a substitute:
+  the handler is the only place that knows what a real value looks like.
+
 Prompt guidance for `system_prompt`: spoken output, so short sentences, no
-markdown, no lists; state when to call each tool by name; tell it what to do
+markdown, no lists; state when to call each tool by name and, for each argument,
+that it comes from the caller and is never to be guessed; tell it what to do
 when a lookup fails. `VoiceAgent` dedents the prompt, so indent freely.
 
 ## Backend contracts (what the platform sends you)

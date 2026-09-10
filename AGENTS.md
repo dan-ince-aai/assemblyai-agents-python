@@ -57,6 +57,10 @@ already has one, mount `routes(agent, ...)` into it.
   platform refuses a tool call carrying an invented or reworded value, and the
   refusal reaches the caller as silence. Pass what was actually said, verbatim,
   and drop empty values (`byo.established(**arguments)` does that).
+- **Validate arguments in the handler.** A model that was never told a value
+  asks for it anyway: a live call reached `find_policy(policy_number="policy
+  number")`, the parameter's description echoed back as its value. Return a
+  refusal the model can read rather than treating the string as data.
 - **A tool result may be prose, not JSON.** "The caller did not finish entering
   card_number (too_short), so the tool was not called" is a real result.
   Reporting that to the caller as a failure of the thing they were doing is a
