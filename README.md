@@ -282,8 +282,9 @@ You do not need a phone number or a microphone to check the whole loop. With
 [ngrok](https://ngrok.com) or [cloudflared](https://github.com/cloudflare/cloudflared)
 on your `PATH`, `examples/e2e_check.py` opens a tunnel to a local port, imports
 your declaration with `PUBLIC_BASE_URL` set to the tunnel, deploys a throwaway
-copy of the agent, opens a session, asks the question you give it, and records
-every request the platform makes to your tool endpoints:
+copy of the agent, opens a session, waits for the greeting, hands the model the
+line you give it as if a caller had said it, and records every request the
+platform makes to your tool endpoints:
 
 ```bash
 python examples/e2e_check.py --module pizza_line --path examples \
@@ -369,7 +370,7 @@ def schedule_delivery(
   provides per-parameter descriptions.
 - **Parameters.** Every parameter needs a type hint. Supported: `str`, `int`,
   `float`, `bool`, `list[T]`, `dict[str, T]`, `Literal[...]`, an `Enum`
-  subclass, `Optional[T]`, and pydantic `BaseModel` subclasses (nested models
+  subclass, `Optional[T]` / `T | None`, and pydantic `BaseModel` subclasses (nested models
   are inlined; recursive models are refused). A parameter with a default is
   optional in the schema. `*args`, `**kwargs` and positional-only parameters
   cannot be described and are refused.
@@ -417,8 +418,9 @@ annotation, not by name, and is excluded from the schema. The context offers
 `http` (an async HTTP client), `log`, `session_id`, `aborted` and
 `secret(name)`. Supply your own object satisfying the protocol when serving the
 tool (`tool.invoke(context=ctx, **arguments)`); calling `invoke` without
-`context=` on a tool that declares one raises `TypeError`. The `testing` module
-ships an offline double. Handlers routed through `AgentConnection(tools=...)`
+`context=` on a tool that declares one raises `TypeError` unless the parameter
+has a default (`ctx: ToolContext = None`). The `testing` module ships an
+offline double. Handlers routed through `AgentConnection(tools=...)`
 receive the model's arguments only.
 
 ## Pre-connect requests
@@ -708,8 +710,10 @@ asyncio.run(main())
 Client → server methods: `update(...)`, `send_audio(pcm_bytes)`,
 `send_tool_result(call_id, result, is_error=False)`, `send_message(text, role="user")`,
 `create_reply(instructions=None)`, `cancel_reply(reply_id)`, `resume(session_id)`,
-`end()`. `send_message` only appends to the conversation history; call
-`create_reply()` afterwards to have the agent respond to it.
+`end()`. `send_message` appends a message to the conversation history and
+`create_reply` asks the agent to speak, optionally steered by `instructions`;
+neither is needed on a normal audio session. `examples/e2e_check.py` uses
+`create_reply(instructions=...)` after the greeting to stand in for a caller.
 
 Server → client events (all pydantic models in `assemblyai_agents.models.ws`):
 

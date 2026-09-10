@@ -68,9 +68,12 @@ this file covers the workflow and the decisions.
      `scripts/e2e_check.py` (see below). It is the fastest way to prove the
      platform actually reaches the backend, and its recorded requests show the
      exact body/headers the platform sends.
-   - Mic-less spot check: `AgentConnection(agent_id=..., audio=False)`; in
-     `on_ready`, `await conn.say(text)` **then** `await conn.session.create_reply()`
-     — `say()` alone only appends to the history and nothing is spoken.
+   - Mic-less spot check: `AgentConnection(agent_id=..., audio=False)`; wait
+     for the first `on_agent_transcript` (the greeting), then
+     `await conn.session.create_reply('The caller just said: "…". Respond to the caller, calling your tools as needed.')`.
+     Do not rely on `say()` / `conversation.message`: in testing the model did
+     not see its content, and a `reply.create` sent while the greeting is still
+     playing replaces the greeting. `scripts/e2e_check.py` does exactly this.
    - A real call: `AgentConnection` from a terminal (needs the `[audio]` extra
      and PortAudio), or a phone number.
    - When a hosted tool fails, the caller only hears an apology and the client
@@ -88,8 +91,9 @@ The script in this skill's `scripts/` folder needs `ngrok` (configured with an
 auth token) or `cloudflared` on `PATH`, plus `ASSEMBLYAI_API_KEY`. It opens a
 tunnel to a local port, imports the declaration with `PUBLIC_BASE_URL` set to
 the tunnel URL, deploys a throwaway copy of the agent, opens a WebSocket session
-with no device audio, injects an utterance as a text turn, and records every
-request the platform makes to the tool paths. Exit code 0 means the platform
+with no device audio, waits for the greeting, hands the utterance to the model
+through `reply.create` instructions, and records every request the platform
+makes to the tool paths. Exit code 0 means the platform
 called the tool through the tunnel. The throwaway agent is deleted afterwards.
 
 ```bash
@@ -103,8 +107,12 @@ Requirements it imposes on the declaration, so design for them from the start:
   network side effects at import;
 - tool URLs are built from `os.environ["PUBLIC_BASE_URL"]` (a `hosted(path)`
   helper), so pointing them at a tunnel is a matter of setting one variable;
-- the utterance clearly needs the named tool; the model does not always act on
-  a text turn, so the script retries with a fresh session (`--attempts`, default 3).
+- the utterance clearly needs the named tool; the script retries with a fresh
+  session (`--attempts`, default 3) to absorb model variance;
+- `ASSEMBLYAI_API_KEY` and any other variable the declaration reads (for
+  example `TOOL_SECRET`) are exported; the script sets only `PUBLIC_BASE_URL`;
+- no other ngrok session is running (the free tier allows one; stop the one
+  behind a dev deployment first, or pass `--tunnel cloudflared`).
 
 Pre-connect is telephony-only and is not exercised by this check. ngrok's free
 tier serves an interstitial to browsers; the script sends the
@@ -135,7 +143,35 @@ serialises with a pydantic warning and compares unequal to the enum.
 Default to `http=` tools for anything the user would ship. A handy pattern is a
 `hosted(path)` helper that returns the HTTP config when `PUBLIC_BASE_URL` is set
 and `None` otherwise, so the same declaration runs client-resident on a laptop
-and hosted in production (see `examples/pizza_line.py` in the SDK repo).
+and hosted in production, and `e2e_check.py` can point it at a tunnel:
+
+```python
+import os
+from assemblyai_agents import VoiceAgent, tool
+from assemblyai_agents.models.rest import HttpMethod, HttpToolHeaderInput, PlaintextHttpToolConfig
+
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+TOOL_SECRET = os.environ.get("TOOL_SECRET", "change-me")
+
+def hosted(path: str) -> PlaintextHttpToolConfig | None:
+    """HTTP config pointing the platform at your backend, or None to run the tool in-process."""
+    if not PUBLIC_BASE_URL:
+        return None
+    return PlaintextHttpToolConfig(
+        url=f"{PUBLIC_BASE_URL}{path}",
+        http_method=HttpMethod.POST,
+        headers=[HttpToolHeaderInput(name="Authorization", value=f"Bearer {TOOL_SECRET}")],
+    )
+
+@tool(timeout_seconds=10, http=hosted("/tools/lookup_order"))
+async def lookup_order(order_id: str) -> dict:
+    """Look up the status of a customer's order by its order number.
+
+    Args:
+        order_id: The order number the caller read out, like W004.
+    """
+    ...
+```
 
 ## Writing a tool that the SDK accepts
 
@@ -148,8 +184,8 @@ server would reject, at import time. The rules, and why they exist:
 - **Docstring first paragraph** is the description the model reads to decide
   whether to call the tool; required. Put per-parameter text under `Args:`.
 - **Every parameter typed**: `str`, `int`, `float`, `bool`, `list[T]`,
-  `dict[str, T]`, `Literal[...]`, `Enum`, `Optional[T]`, pydantic `BaseModel`.
-  A default makes it optional. No `*args`/`**kwargs`.
+  `dict[str, T]`, `Literal[...]`, `Enum`, `Optional[T]` / `T | None`, pydantic
+  `BaseModel`. A default makes it optional. No `*args`/`**kwargs`.
 - **Return annotation required** and JSON-serialisable (`dict`, `list`, `str`,
   `int`, `float`, `bool`, `None`, `BaseModel`).
 - `timeout_seconds` 1–300 (default 120). Set it low (5–15) for anything a caller
@@ -160,9 +196,11 @@ server would reject, at import time. The rules, and why they exist:
 - A parameter annotated `ToolContext` is injected, not part of the schema, and
   only when the caller passes `context=` to `Tool.invoke`; `invoke(**arguments)`
   without it raises `TypeError`. The SDK ships no production context object
-  (only the testing double), so for hosted tools either leave `ToolContext` out
-  or build your own object satisfying the protocol in `/tools/{name}`.
-  `AgentConnection` passes model arguments only.
+  (only the testing double), so for hosted tools either leave `ToolContext` out,
+  declare it as `ctx: ToolContext = None` (accepted; `invoke(**arguments)` then
+  runs with `ctx` unset — `Optional[ToolContext]` is refused), or build your own
+  object satisfying the protocol in `/tools/{name}`. `AgentConnection` passes
+  model arguments only.
 
 Prompt guidance for `system_prompt`: spoken output, so short sentences, no
 markdown, no lists; state when to call each tool by name; tell it what to do
@@ -172,7 +210,8 @@ when a lookup fails. `VoiceAgent` dedents the prompt, so indent freely.
 
 - **HTTP tool call.** `POST`/`PUT`/`PATCH` tools receive the model's arguments
   as the JSON body shaped by the tool's parameter schema; `GET`/`DELETE` tools
-  receive them as query parameters. Whatever JSON you return is stringified for
+  receive them as query parameters, i.e. as strings — `Tool.invoke` does not
+  coerce, so restore numbers/booleans from `tool.spec.parameters` first. Whatever JSON you return is stringified for
   the model. The headers configured on the tool are sent verbatim, so put a
   shared secret in an `Authorization` header and check it.
 - **Pre-connect request.** Telephony only: called before a phone call is
@@ -211,7 +250,8 @@ when a lookup fails. `VoiceAgent` dedents the prompt, so indent freely.
 | `ValidationError: … URL host … does not resolve` on create/update | Tool and pre-connect hostnames must resolve in public DNS: use a tunnel URL, not a placeholder. |
 | `AuthenticationError: Unauthorized` | Wrong or missing `ASSEMBLYAI_API_KEY`, or the key belongs to the other regional host. |
 | `on_error` receives `SessionError(code=agent_not_found)`, then the next send raises `ConnectionClosedError` 1008 | The agent lives on the other regional host or was deleted; `async with conn:` itself does not raise. Redeploy and store the new id. |
-| `say()` produces silence | Follow it with `await conn.session.create_reply()`. |
+| `say()` produces silence, or the agent answers as if nothing was said | Text turns are not reliably visible to the model. To stand in for a caller in a test, wait for the greeting and then `create_reply(instructions='The caller just said: "…"…')`. |
+| The agent opened with a generic "Hello, how can I help?" instead of the configured greeting | A `reply.create` was sent while the greeting was still playing and replaced it. Inject only after the first agent transcript. |
 | The agent apologises that it cannot access the system | Your tool endpoint was unreachable, slow, or non-2xx. Check the tunnel/server logs and the session's `timeline` artifact. |
 | `DeviceAudioNotInstalledError` | `pip install "assemblyai-agents[audio] @ git+..."` after installing PortAudio. |
 | Model never calls the tool | Sharpen the docstring's first paragraph and say in the system prompt when to call it. |

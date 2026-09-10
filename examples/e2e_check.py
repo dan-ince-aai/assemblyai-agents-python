@@ -18,14 +18,20 @@ What it does, in order:
    proxies every request to your own running backend instead. Either way each
    request the platform makes is recorded.
 4. Deploys a throwaway copy of the agent, opens a WebSocket session with no
-   device audio, injects the utterance as a text turn and asks for a reply.
+   device audio, waits for the greeting to finish, then hands the utterance to
+   the model through ``reply.create`` instructions. (A ``conversation.message``
+   is not reliably seen by the model, and a reply requested while the greeting
+   is still playing replaces the greeting, so neither is used.)
 5. Waits for the platform to call a tool endpoint through the tunnel, prints the
    recorded requests (method, path, arguments, headers with secrets masked), and
    exits 0 on success. The throwaway agent is deleted and the tunnel closed.
 
-Text turns are a test convenience: the model does not always act on one, so the
-check retries with a fresh session (``--attempts``). Pre-connect requests are
-telephony-only and are not exercised here.
+The injected turn is a test convenience; the check retries with a fresh session
+(``--attempts``) to absorb model variance. Export any other variable your
+declaration reads (for example ``TOOL_SECRET``) alongside ``ASSEMBLYAI_API_KEY``.
+ngrok's free tier allows one agent session at a time, so stop any other ngrok
+first or pass ``--tunnel cloudflared``. Pre-connect requests are telephony-only
+and are not exercised here.
 """
 
 import argparse
@@ -47,6 +53,7 @@ import httpx
 
 HEALTH_PATH = "/__e2e_health"
 SKIP_WARNING = {"ngrok-skip-browser-warning": "1"}  # ngrok's free tier shows an interstitial to browsers
+GREETING_TIMEOUT = 20.0  # seconds to wait for the platform's opening turn before injecting anyway
 
 
 # --------------------------------------------------------------------------- tunnel
@@ -225,20 +232,40 @@ async def converse(agent_id: str, utterance: str, recorder: Recorder, wait_secon
 
     loop = asyncio.get_running_loop()
     reached = asyncio.Event()
+    greeting_done = asyncio.Event()
     recorder.on_tool_call = lambda: loop.call_soon_threadsafe(reached.set)
     conn = AgentConnection(agent_id=agent_id, audio=False)
+    transcripts = 0
+    background: list[asyncio.Task] = []
+
+    # The platform speaks the greeting as its own first reply. A reply.create sent
+    # while that reply is in flight replaces the greeting and the injected text is
+    # lost; and a conversation.message is not reliably visible to the model. So:
+    # wait for the greeting's transcript, then carry the utterance in the
+    # instructions of a reply.create.
+    async def _inject():
+        try:
+            await asyncio.wait_for(greeting_done.wait(), timeout=GREETING_TIMEOUT)
+        except asyncio.TimeoutError:
+            print(f"  attempt {attempt}: no opening turn within {GREETING_TIMEOUT:.0f}s; injecting anyway")
+        await asyncio.sleep(1.0)  # let the greeting's reply.done land
+        print(f"  attempt {attempt}: handing the utterance to the model")
+        await conn.session.create_reply(
+            f'The caller just said: "{utterance}". Respond to the caller, calling your tools as needed.'
+        )
 
     @conn.on_ready
     async def _ready(event):
-        print(f"  attempt {attempt}: session {event.session_id} ready; sending the utterance")
-        # A conversation message alone is only appended to the history; asking
-        # for a reply is what makes the model act on it.
-        await conn.say(utterance)
-        await conn.session.create_reply()
+        print(f"  attempt {attempt}: session {event.session_id} ready; waiting for the greeting")
+        background.append(asyncio.create_task(_inject()))
 
     @conn.on_agent_transcript
     def _agent(text):
+        nonlocal transcripts
+        transcripts += 1
         print(f"  attempt {attempt}: agent said: {text}")
+        if transcripts == 1:
+            greeting_done.set()
 
     @conn.on_error
     def _error(event):
@@ -251,6 +278,8 @@ async def converse(agent_id: str, utterance: str, recorder: Recorder, wait_secon
             await asyncio.wait_for(reached.wait(), timeout=wait_seconds)
         except asyncio.TimeoutError:
             print(f"  attempt {attempt}: no tool call reached the tunnel within {wait_seconds:.0f}s")
+        for task in background:
+            task.cancel()
         await conn.aclose()
         try:
             await asyncio.wait_for(run, timeout=10)
@@ -277,7 +306,7 @@ def main() -> int:
     parser.add_argument("--tunnel", choices=["auto", "ngrok", "cloudflared"], default="auto")
     parser.add_argument("--forward", metavar="URL", help="proxy requests to your own running backend, e.g. http://127.0.0.1:8000, instead of serving the tools here")
     parser.add_argument("--attempts", type=int, default=3)
-    parser.add_argument("--wait", type=float, default=30, help="seconds to wait per attempt for the platform's tool call")
+    parser.add_argument("--wait", type=float, default=45, help="seconds to wait per attempt (greeting included) for the platform's tool call")
     parser.add_argument("--reach-timeout", type=int, default=120, help="seconds to wait for the tunnel to answer")
     args = parser.parse_args()
 
