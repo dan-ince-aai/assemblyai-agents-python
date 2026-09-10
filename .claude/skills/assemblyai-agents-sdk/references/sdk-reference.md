@@ -60,7 +60,7 @@ VoiceAgent(*, name: str, system_prompt: str, voice: str,
 - `tool_definitions()`, `pre_connect_requests()`, `wire_transfer_targets()`, `client_resident_tool_names() -> tuple[str, ...]` (tools with no `http=`).
 - `voice`: an AssemblyAI voice name, e.g. `"ivy"` (verified), `"james"`, `"mia"`. A 422 `ValidationError` names an unknown voice. On the wire it is `VoiceConfig(voice_id=voice)` (`AgentCreateRequest.voice.voice_id`, `AgentResponse.voice.voice_id`), so pin payloads with `VoiceConfig(voice_id="ivy")`, not `"ivy"`.
 - Every tool/pre-connect URL host must resolve in public DNS at create/update time (`ValidationError` "URL host … does not resolve"); `agents.create` does accept a declaration whose tools are all client-resident.
-- `llm`: `LlmConfigRequest(base_url, model, api_key)` – any OpenAI-compatible chat-completions endpoint; sent as a one-element list (capped at one in v1). `base_url` must be HTTPS and resolve in DNS; `api_key` is write-only (`LlmConfigResponse` returns `base_url` and `model` only). The platform calls `POST {base_url}/chat/completions` with `Authorization: Bearer <api_key>`, always `stream: true` + `stream_options: {"include_usage": true}` (Server-Sent Events required), a 10s read timeout, `tool_choice: "auto"`, and `tools` in OpenAI function form with a second `type: "function"` and the platform's `timeout_seconds`/`execution_mode` nested inside `function`. `messages[0]` is the agent's `system_prompt` plus the platform's spoken-output guidance; the greeting is an `assistant` message. Returned `tool_calls` are executed by the platform, which calls back with a `tool` message (`tool_call_id`) and then a `system` note — so the cue to speak is a tool result with no assistant text after it, and a repeat of the same call should be answered from the transcript. See `examples/byo_llm_server.py` in the SDK repo.
+- `llm`: `LlmConfigRequest(base_url, model, api_key)` – any OpenAI-compatible chat-completions endpoint; sent as a one-element list (capped at one in v1). `base_url` must be HTTPS and resolve in DNS; `api_key` is write-only (`LlmConfigResponse` returns `base_url` and `model` only). The platform calls `POST {base_url}/chat/completions` with `Authorization: Bearer <api_key>`, always `stream: true` + `stream_options: {"include_usage": true}` (Server-Sent Events required), a 10s read timeout, `tool_choice: "auto"`, and `tools` in OpenAI function form with a second `type: "function"` and the platform's `timeout_seconds`/`execution_mode` nested inside `function`. `messages[0]` is the agent's `system_prompt` plus the platform's spoken-output guidance; the greeting is an `assistant` message. Returned `tool_calls` are executed by the platform, which calls back with a `tool` message (`tool_call_id`) and then a `system` note — so the cue to speak is a tool result with no assistant text after it, and a repeat of the same call should be answered from the transcript. See `examples/one_file_agent.py` in the SDK repo.
 
 ## @tool
 
@@ -231,43 +231,21 @@ Pin payloads with `assert agent.to_request() == AgentCreateRequest(...)` or `age
 `pcm_to_base64(bytes) -> str`, `base64_to_pcm(str) -> bytes`, `pcm16_to_ulaw`, `ulaw_to_pcm16`, `pcm16_to_alaw`, `alaw_to_pcm16`;
 `await microphone_stream(session, *, sample_rate=24000, frames_per_buffer=480, device=None)`; `PlaybackSink(*, sample_rate=24000, frames_per_buffer=480, device=None)` (async context manager; `.handle(event)` routes `reply.*`/`input.speech.started` for playback + barge-in).
 
-## Minimal backend
+## Serving the backend
+
+`assemblyai_agents.serving` answers everything the platform sends, off the declaration, on the standard library alone.
 
 ```python
-# server.py  (pip install fastapi uvicorn)
-import os
-from fastapi import FastAPI, HTTPException, Request, Response
-from assemblyai_agents import WebhookVerificationError, verify
-from agent import agent
+from assemblyai_agents.serving import serve, routes, Refused
 
-TOOL_SECRET = os.environ["TOOL_SECRET"]; WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
-TOOLS = {t.name: t for t in agent.tools or []}
-app = FastAPI()
-
-@app.post("/tools/{name}")
-async def run_tool(name: str, request: Request):
-    if request.headers.get("Authorization") != f"Bearer {TOOL_SECRET}":
-        raise HTTPException(401)
-    if name not in TOOLS:
-        raise HTTPException(404)
-    try:
-        # Tools here take model arguments only. If one declares a ToolContext
-        # parameter, pass your own object as invoke(context=..., **args).
-        return await TOOLS[name].invoke(**await request.json())
-    except TypeError as exc:            # unexpected or missing argument
-        raise HTTPException(422, str(exc))
-
-@app.post("/pre-connect/whois")
-async def whois(request: Request):
-    return {"customer_tier": "gold"}            # + "greeting": "..." if allow_overrides=True
-
-@app.post("/webhooks/voice-agents")
-async def webhook(request: Request):
-    try:
-        event = verify(await request.body(), request.headers.get("X-AAI-Signature", ""), WEBHOOK_SECRET)
-    except WebhookVerificationError as exc:
-        raise HTTPException(400, str(exc))
-    ...  # act on event["event"]
-    return Response(status_code=204)
+serve(agent, *, reply=None, host="0.0.0.0", port=8000, tool_secret=None, llm_key=None,
+      pre_connect=None, webhook_secret=None, on_event=None, log=print, background=False)
 ```
-Run with `uvicorn server:app --port 8000`, expose over HTTPS, set `PUBLIC_BASE_URL` to that address, deploy.
+Routes served: `POST /tools/{name}` (one per `@tool`, checked against `Authorization: Bearer <tool_secret>`), `POST /v1/chat/completions` (only when `reply=` is given; streams SSE, `Bearer <llm_key>`), one route per declared pre-connect URL (handlers passed as `pre_connect={"/pre-connect/whois": fn}`), `POST /webhooks/voice-agents` (verified against `webhook_secret`, dispatched to `on_event`), and `GET /healthz`.
+
+- `reply` is `Callable[[Turn], Say | Call | Silence]` — see `assemblyai_agents.byo`.
+- `background=True` returns the server instead of blocking, for tests.
+- Raise `Refused(message)` from a tool handler to return a refusal the model can read rather than a 500.
+- `routes(agent, ...)` takes the same keywords and returns `{path: handler}` as plain callables, to mount into an application that already exists — FastAPI, Flask, anything.
+
+`serve` prints and flushes on every request; a serving process whose log only appears at exit is no use during a call.

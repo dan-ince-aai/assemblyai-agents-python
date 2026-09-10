@@ -5,44 +5,48 @@ description: Build, deploy and operate AssemblyAI voice agents in Python with th
 
 # Building voice agents with `assemblyai-agents`
 
-The SDK is a **backend** SDK: you declare the agent and its tools in Python,
-deploy the declaration over REST, and serve the tool logic, pre-connect lookups
-and webhook handling from the user's own backend. The platform owns the call
-(speech-to-text, LLM, text-to-speech, turn-taking, telephony); it reaches the
-backend over HTTPS when the model calls a tool. Keep that split in mind: the
-deliverable is usually a small service plus a declaration, not a client app.
+This is the **backend** SDK for the Voice Agents API. The platform owns the
+call: speech to text, text to speech, turn taking, telephony. You own what the
+agent knows and can do, and optionally what it says. The two meet over HTTPS,
+and only over HTTPS, because a phone or SIP call has no client on the line for
+the platform to ask.
 
-`references/sdk-reference.md` is the full API surface (every class, method,
-field and exception). Read it when you need a signature or an exact field name;
-this file covers the workflow and the decisions.
+So the deliverable is almost always a script that serves the user's own
+functions, plus a declaration that points the platform at it. Not a client app,
+and not a hand-written web service.
 
-## Start from the starter
+`references/sdk-reference.md` is the full API surface. Read it for a signature
+or an exact field name; this file covers the shape of the work.
 
-Unless the user has an existing project, copy `examples/starter/` out of the
-SDK repo and work in that. It is a running agent with the whole loop already
-wired: a mocked system of record, tools, a staged reply engine, a local
-rehearsal harness, whole-call tests, a scripted driver against the deployed
-agent, and deploy. Renaming it and rewriting four files is faster and far less
-error-prone than assembling the same thing from scratch, and it starts with
-every platform trap below already handled.
+## Pick a shape first
 
-```bash
-cp -r <sdk-repo>/examples/starter my-agent && cd my-agent
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python \
-    "git+https://github.com/dan-ince-aai/assemblyai-agents-python.git" \
-    fastapi "uvicorn[standard]" pytest pytest-asyncio httpx
-.venv/bin/python rehearse.py happy      # a whole call, offline, in milliseconds
-.venv/bin/python -m pytest -q
+Four, in order of how much you take on. Copy the example, do not assemble from
+scratch: each one already handles the platform traps listed further down.
+
+| The user wants | Shape | Copy |
+| --- | --- | --- |
+| an agent that can look things up and act | tools only, platform's model talks | `examples/tools_only_agent.py` |
+| control over what is said | your own replies (`llm=`) | `examples/one_file_agent.py` |
+| stages, or cost control, or a stage that provably cannot do certain things | subagent routing | `examples/subagents.py` |
+| a project rather than a script: tests, a system of record, a call flow to grow | the full kit | `examples/starter/` |
+
+Start at the top of that table and move down only for a stated reason. Most
+first agents are the first row, and the first three are a single file each.
+
+The one-file shapes all do the same three things in this order, and the order
+matters because tool URLs have to exist before the agent is created:
+
+```python
+with public_address(PORT) as base_url:      # examples/expose.py: ngrok
+    agent = build(base_url)                 # tool URLs point at this process
+    agent_id = deploy(agent)                # create, or update a stored id
+    serve(agent, reply=decide, port=PORT)   # blocks; the platform calls in
 ```
 
-Then change, in this order: `store.py` (their systems), `agent.py` (their tools
-and prompt), `reply.py` (their call flow), `tests/test_call.py` (a test per
-call worth caring about). Read its README for what each file is for.
-
-Build from nothing only when the user asks for something the starter's shape
-does not fit, and even then read `reply.py` and `agent.py` first for the
-conventions.
+`examples/starter/` is the same three steps in `run.py`, around a project with
+`store.py` (the system of record), `agent.py` (tools and declaration),
+`reply.py` (the call flow), `flow.py` (stage machinery), `rehearse.py` (a whole
+call offline) and tests. Change those four files in that order.
 
 ## Workflow
 
@@ -64,18 +68,16 @@ conventions.
    plus a module-level `agent = VoiceAgent(...)`. Nothing in it should touch the
    network at import time, so it can be imported by tests and by the server.
 
-4. **Serve the backend** if any tool has `http=` or a pre-connect request is
-   declared: one `POST /tools/{name}` route that authorises the request and
-   calls `TOOLS[name].invoke(**arguments)`, one route per pre-connect URL, and
-   a webhook route that calls `verify()` on the raw body. FastAPI is the natural
-   fit but any framework works. Ask the user for the public HTTPS base URL and
-   read it from an environment variable (`PUBLIC_BASE_URL`). The API checks at
-   create/update time that every tool and pre-connect hostname resolves in
-   public DNS (`ValidationError: … URL host … does not resolve`), so a
-   placeholder cannot be deployed: during development expose the local server
-   with `ngrok http 8000` and keep it running — a dead origin shows up only as
-   the model apologising to the caller. `examples/expose.py` does that step and
-   the next section wraps the whole sequence into one command.
+4. **Serve it** with `serving.serve(agent, reply=..., tool_secret=..., ...)`,
+   which answers every route the platform will call straight off the
+   declaration. Do not hand-write a web service for this; if the project
+   already has one, mount `routes(agent, ...)` into it instead. The address has
+   to be public HTTPS: the API resolves every tool and pre-connect hostname in
+   public DNS at create/update time (`ValidationError: … URL host … does not
+   resolve`), so a placeholder cannot be deployed. `examples/expose.py` starts
+   ngrok and yields the address, unless `PUBLIC_BASE_URL` is already set. Keep
+   it running — a dead origin surfaces only as the model apologising to the
+   caller.
 
 5. **Deploy** with `client.agents.create(agent)`; print and persist the returned
    `id` (env var, `.agent_id` file, or the user's config). On later changes use
@@ -149,7 +151,7 @@ a strong enough guarantee for what has to be said: on a test call the tools-only
 agent looked a value up correctly and then answered a different question, which
 is fine for a shop and not fine for a disclosure.
 
-### Subagents, when one prompt is doing too much
+## Subagents, when one prompt is doing too much
 
 `examples/subagents.py` routes a call between stages, each with its own model,
 prompt and allowed tools: a cheap model to check who is on the line, a stronger
@@ -441,9 +443,10 @@ three, with an off switch, and every test in the starter runs with the model
 off so the fallback wording stays honest.
 
 A working endpoint, tools and replies in one process, is
-`examples/one_file_agent.py`; `examples/byo_llm_server.py` is the same idea
-against a FastAPI app if the project already has one. On a call the platform
-arrives three times per exchange: to ask what to say, to run the tool that
+`examples/one_file_agent.py`. If the project already has a web application,
+`routes(agent, reply=decide, ...)` returns the same handlers as plain
+callables to mount into it. On a call the platform arrives three times per
+exchange: to ask what to say, to run the tool that
 answer asked for, and again with the result.
 
 ## Telephony

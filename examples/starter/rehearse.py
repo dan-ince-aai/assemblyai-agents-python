@@ -11,7 +11,18 @@ a change, and the tests drive the same function.
 
 import asyncio
 import json
+import os
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The declaration reads these when it is imported, and a rehearsal never fetches
+# anything, so a placeholder address is the honest value here. `run.py` sets the
+# real one before importing, and that wins.
+os.environ.setdefault("PUBLIC_BASE_URL", "https://rehearsal.invalid")
+os.environ.setdefault("TOOL_SECRET", "rehearsal-tool-secret")
+os.environ.setdefault("LLM_API_KEY", "rehearsal-llm-key")
+os.environ.setdefault("BYO_LLM", "1")
 
 from assemblyai_agents.byo import Call, Say, Turn
 

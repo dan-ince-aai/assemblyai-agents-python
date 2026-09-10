@@ -8,26 +8,21 @@ against that address, deploys it, and then answers the platform's requests from
 the functions in this project until you stop it. Point a phone number at the
 agent id it prints and a real caller arrives down the same path.
 
-The only part that knows a tunnel exists is `expose.py`, next door in the
-examples. Everything here reads `PUBLIC_BASE_URL`, so setting that to a staging
-host or a deployment makes the tunnel disappear with no other change.
+The only part that knows a tunnel exists is `expose.py`, in this directory.
+Everything else reads `PUBLIC_BASE_URL`, so setting that to a staging host or a
+deployment makes the tunnel disappear with no other change, and deletes that
+file when agent code can be deployed directly.
 """
 
-import importlib.util
 import os
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-# This project first, so its own modules win. `expose.py` lives one level up in
-# the examples, and is loaded by path rather than by putting that directory on
-# the import path, where its files would shadow this project's.
-sys.path.insert(0, str(HERE))
+# This project first, so its modules win over anything of the same name that
+# happens to be on the path already.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-_expose = importlib.util.spec_from_file_location("expose", HERE.parent / "expose.py")
-expose = importlib.util.module_from_spec(_expose)
-_expose.loader.exec_module(expose)
-public_address = expose.public_address
+from expose import public_address
 
 PORT = int(os.environ.get("PORT", "8000"))
 

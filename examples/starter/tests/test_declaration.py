@@ -53,3 +53,18 @@ def test_the_greeting_names_the_practice_and_the_recording():
     greeting = agent_module.agent.greeting
     assert "Fairview Dental" in greeting
     assert "recorded line" in greeting
+
+
+def test_expose_is_the_same_file_as_the_examples_copy():
+    """The starter ships its own `expose.py` so a copied project runs.
+
+    Two copies drift, so this pins them together. If the examples copy changes,
+    copy it over; when agent code can be deployed directly, both are deleted.
+    """
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent.parent
+    upstream = here.parent / "expose.py"
+    if not upstream.exists():
+        return  # this project has been copied out of the SDK repo; nothing to pin
+    assert (here / "expose.py").read_text() == upstream.read_text()

@@ -154,23 +154,68 @@ client = Client(base_url="https://agents.us.assemblyai.com")
 
 ## Quickstart
 
-The `examples/` directory contains the complete, runnable version of this
-walkthrough: `pizza_line.py` (the declaration), `server.py` (the service),
-`deploy.py` and `phone.py`. Two single scripts stand alone:
-`tools_only_agent.py`, where the platform's model runs the conversation and
-your code only answers tool calls, and `one_file_agent.py`, which adds your own
-reply generation. `starter/` is a fuller project to copy.
+Everything the platform needs from you arrives over HTTPS, because a phone or
+SIP call has no client on the line for it to ask. So an agent is a script that
+serves your own functions, plus a declaration pointing the platform at it.
+There is no service to write and no framework to choose.
+
+Pick the smallest shape that covers what you need. Copy the example rather than
+assembling one from scratch; each already handles the traps documented further
+down.
+
+| You want | Shape | Copy |
+| --- | --- | --- |
+| an agent that can look things up and act | tools only, the platform's model talks | `examples/tools_only_agent.py` |
+| control over what is said | your own replies (`llm=`) | `examples/one_file_agent.py` |
+| stages, cost control, or a stage that provably cannot do certain things | subagent routing | `examples/subagents.py` |
+| a project rather than a script | the starter kit | `examples/starter/` |
+
+### Run one
+
+```bash
+export ASSEMBLYAI_API_KEY=...
+python examples/tools_only_agent.py
+```
+
+```text
+ngrok: https://a1bf-....ngrok-free.app -> http://127.0.0.1:8000
+created agent agent_7290244bd8c6439795598a1a04332dc0
+serving 'Ridgeway Hardware' on http://0.0.0.0:8000
+  [tool] check_stock(item='cordless drill') -> 4 in stock
+```
+
+Point a phone number at the agent id it prints and a real caller takes the
+identical path. Stop the script and the agent is still stored; the tunnel
+address is what goes away, so redeploy after restarting.
+
+### The three steps inside
+
+```python
+with public_address(PORT) as base_url:      # examples/expose.py: starts ngrok
+    agent = build(base_url)                 # tool URLs point back at this process
+    agent_id = deploy(agent)                # create, or update a stored id
+    serve(agent, reply=decide, port=PORT)   # blocks; the platform calls in
+```
+
+The order matters: the API resolves every tool hostname in public DNS when the
+agent is created, so the address has to exist first.
 
 ### 1. Declare the agent
 
-```python
-# pizza_line.py
-import os
-from assemblyai_agents import Captured, PreConnectRequest, VoiceAgent, tool
-from assemblyai_agents.models.rest import HttpMethod, HttpToolHeaderInput, PlaintextHttpToolConfig
+`@tool` turns a plain function into a tool: the schema comes from the
+annotations and the description from the docstring, so there is no second copy
+of either to keep in step. `http=` is what makes it reachable from a phone
+call.
 
-BASE_URL = os.environ["PUBLIC_BASE_URL"]        # public HTTPS address of your backend
-TOOL_SECRET = os.environ["TOOL_SECRET"]         # presented to your backend on every tool call
+```python
+import os
+from assemblyai_agents import VoiceAgent, tool
+from assemblyai_agents.models.rest import (
+    HttpMethod, HttpToolHeaderInput, PlaintextHttpToolConfig,
+)
+
+BASE_URL = os.environ["PUBLIC_BASE_URL"]   # public HTTPS address of this process
+TOOL_SECRET = os.environ["TOOL_SECRET"]    # presented back to you on every call
 
 def hosted(path: str) -> PlaintextHttpToolConfig:
     return PlaintextHttpToolConfig(
@@ -186,7 +231,7 @@ async def lookup_order(order_id: str) -> dict:
     Args:
         order_id: The order number the caller read out, like W004.
     """
-    return await orders.status(order_id)
+    return await orders.status(order_id)     # your database, your API, anything
 
 agent = VoiceAgent(
     name="Pizza Line",
@@ -199,56 +244,37 @@ agent = VoiceAgent(
     """,
     greeting="Pizza Palace, how can I help?",
     tools=[lookup_order],
-    pre_connect=[
-        PreConnectRequest(
-            url=f"{BASE_URL}/pre-connect/whois",
-            returns=[Captured(name="customer_tier", path="customer_tier", default="standard")],
-            timeout_ms=500,
-            allow_overrides=True,
-        )
-    ],
 )
 ```
 
 `VoiceAgent` is a frozen declaration: every field maps onto the create request,
 and `agent.to_request()` returns the exact model the SDK sends, so you can
 inspect or assert on it without touching the network. The system prompt is
-dedented and stripped, so an indented triple-quoted block is fine.
+dedented and stripped, so an indented triple-quoted block is fine. Nothing in
+this module touches the network at import time, so tests can import it.
 
-### 2. Serve the tools from your backend
-
-The platform calls the URL on each tool with the model's arguments. Any web
-framework works; with FastAPI it is a dozen lines:
+### 2. Serve it
 
 ```python
-# server.py
-from fastapi import FastAPI, HTTPException, Request
-from pizza_line import agent, TOOL_SECRET
+from assemblyai_agents.serving import serve
 
-TOOLS = {declared.name: declared for declared in agent.tools}
-app = FastAPI()
-
-@app.post("/tools/{name}")
-async def run_tool(name: str, request: Request):
-    if request.headers.get("Authorization") != f"Bearer {TOOL_SECRET}":
-        raise HTTPException(401)
-    arguments = await request.json()              # {"order_id": "W004"}
-    return await TOOLS[name].invoke(**arguments)  # JSON result → spoken by the agent
-
-@app.post("/pre-connect/whois")
-async def whois(request: Request):
-    return {"customer_tier": "gold", "greeting": "Pizza Palace, welcome back."}
+serve(agent, port=8000, tool_secret=TOOL_SECRET)
 ```
 
-`Tool.invoke` runs the decorated function (sync handlers run in a thread) and
-returns its result, so the same function you unit-test is the one the platform
-reaches. Run it behind HTTPS and set `PUBLIC_BASE_URL` to that address.
+`serve` reads the declaration and answers everything the platform sends:
+`POST /tools/{name}` for each `@tool` on it, a route per pre-connect request,
+`POST /v1/chat/completions` when you pass `reply=`, webhook delivery, and
+`/healthz`. It is standard library only. `Tool.invoke` runs the decorated
+function unchanged (sync handlers go to a thread), so the function you
+unit-test is the one the platform reaches.
+
+If the project already has an application, `routes(agent, ...)` returns the
+same handlers as plain callables to mount wherever you like.
 
 ### 3. Deploy
 
 ```python
 from assemblyai_agents import Client
-from pizza_line import agent
 
 client = Client()
 deployed = client.agents.create(agent)
@@ -257,13 +283,23 @@ print(deployed.id)
 
 To change a deployed agent, edit the declaration and call
 `client.agents.update(deployed.id, agent)`. The update sends the whole
-declaration because `PUT /v1/agents/{id}` replaces the stored agent rather than
-merging into it.
+declaration, because `PUT /v1/agents/{id}` replaces the stored agent rather
+than merging into it. Persist the id and reuse it; do not create a new agent on
+every run.
 
 ### 4. Try it
 
-Put it on a phone number (see *Phone calls*), or talk to it from your terminal
-with the `[audio]` extra installed:
+Call the number, and watch the tool calls and replies arrive in your terminal.
+That is the same path whether the caller is on a phone, on SIP, or in a
+browser, so there is nothing separate to test.
+
+To check a change without picking up the phone, `examples/starter/` has a
+rehearsal harness: it runs your reply logic and your tools in the platform's
+own loop, offline, in milliseconds. Its tests are whole calls, and they belong
+in CI.
+
+You can also talk to a deployed agent from a terminal with the `[audio]` extra
+installed, which needs no tunnel but only reaches tools that run in the client:
 
 ```python
 import asyncio
@@ -278,33 +314,6 @@ async def main():
 
 asyncio.run(main())
 ```
-
-### 5. Try it
-
-Run the service, point a phone number at the agent, and call it. Every tool
-call and every reply arrives in that process over HTTPS, which is the same path
-whether the caller is on a phone, on SIP, or in a browser, so there is nothing
-separate to test.
-
-`examples/one_file_agent.py` does the whole sequence in one command, including
-getting your machine an address:
-
-```bash
-export ASSEMBLYAI_API_KEY=...
-python examples/one_file_agent.py
-```
-
-```text
-ngrok: https://a1bf-....ngrok-free.app -> http://127.0.0.1:8000
-created agent agent_7290244bd8c6439795598a1a04332dc0
-serving 'Northwind order line' on http://0.0.0.0:8000
-POST /v1/chat/completions -> streaming
-  [tool] order_status("It's one zero four two.") -> 1042 found
-```
-
-For a call you can run without picking up the phone, `examples/starter/` has a
-rehearsal harness: it runs your reply logic and your tools in the platform's own
-loop, offline, in milliseconds, and its tests are whole calls.
 
 ## Declaring tools
 
@@ -815,15 +824,14 @@ uv pip install --python .venv/bin/python \
 .venv/bin/python -m pytest -q
 ```
 
-`examples/byo_llm_server.py` is the smaller version of the same idea, for
-reading in one sitting: `server.py` plus a `POST /v1/chat/completions` route,
-with a responder that is a few lines of plain Python. The platform cannot tell
-what is behind the schema, so a decision tree, an open-weights model you host,
-or a retrieval pipeline all work the same way.
+`examples/one_file_agent.py` is the smaller version of the same idea, for
+reading in one sitting: tools and replies in one process, with a responder that
+is a few lines of plain Python. The platform cannot tell what is behind the
+schema, so a decision tree, an open-weights model you host, or a retrieval
+pipeline all work the same way.
 
 ```bash
-# one service: replies, tools and webhooks together
-TOOL_SECRET=... LLM_API_KEY=... uvicorn byo_llm_server:app --port 8000
+python examples/one_file_agent.py   # replies, tools and webhooks in one process
 ```
 
 On a call the platform then arrives three times per exchange: once to ask what

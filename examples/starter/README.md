@@ -16,6 +16,7 @@ rehearse.py  run a whole call locally, no network
 deploy.py    create, update, show, delete
 tests/       whole calls, asserted
 run.py       address, deploy, serve: one command
+expose.py    the ngrok tunnel, and the only temporary file here
 ```
 
 ## Run it in two minutes, offline
@@ -53,8 +54,9 @@ this process.
 
 `run.py` does three things in order: gets an address, deploys the declaration
 built against it, and serves. The only file that knows a tunnel exists is
-`../expose.py`; everything else reads `PUBLIC_BASE_URL`, so pointing that at a
-staging host or a deployment removes the tunnel with no other change.
+`expose.py`; everything else reads `PUBLIC_BASE_URL`, so pointing that at a
+staging host or a deployment removes the tunnel with no other change, and
+deletes that one file when agent code can be deployed directly.
 
 ## The idea worth keeping: stages
 
