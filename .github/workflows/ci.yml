@@ -32,13 +32,15 @@ jobs:
 
   install-from-git:
     # Mirrors what a consumer does: install straight from the repository URL
-    # into a clean interpreter and import the package.
+    # into a clean interpreter and import the package. The workflow token is
+    # embedded in the URL so this works while the repository is private; a
+    # consumer with access uses their own credentials (or SSH) the same way.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: pip install from git
-        run: python -m pip install "git+https://github.com/${{ github.repository }}.git@${{ github.sha }}"
+        run: python -m pip install "git+https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git@${{ github.sha }}"
       - name: Import check
         run: python -c "import assemblyai_agents as a; print(a.__version__); from assemblyai_agents import Client, VoiceAgent, tool, AgentConnection"
