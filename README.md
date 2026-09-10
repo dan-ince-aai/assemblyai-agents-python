@@ -709,6 +709,44 @@ transcript = await scripted_call(agent_id, ["Hi, I need to book", "It's four fou
 assert "booked in for" in transcript.spoken
 ```
 
+### One file, no backend
+
+Everything the platform needs from you arrives over HTTPS, and it has to: a
+phone call has no client on the other end to ask. So the shape to reach for is
+your own code, served, with a public address in front of it.
+
+`examples/one_file_agent.py` is that in one script. It declares tools whose
+bodies are ordinary Python, decides what to say in a plain function, deploys
+the agent, gets itself an address, and serves the platform's requests until you
+stop it:
+
+```bash
+export ASSEMBLYAI_API_KEY=...
+python examples/one_file_agent.py
+```
+
+```text
+ngrok: https://a1bf-....ngrok-free.app -> http://127.0.0.1:8000
+created agent agent_7290244bd8c6439795598a1a04332dc0
+serving 'Northwind order line' on http://0.0.0.0:8000
+POST /v1/chat/completions -> streaming
+  [tool] order_status("It's one zero four two.") -> 1042 found
+```
+
+Point a phone number at that agent id and a real caller gets the same code
+down the same path. `assemblyai_agents.serving.serve(agent, reply=decide)` is
+what answers: it takes the agent you already declared and serves each `@tool`
+on it, your reply function, your pre-connect handler and your webhooks. Nothing
+to install for it, and no service to write. If you would rather host the
+handlers in an application of your own, `routes()` from the same module returns
+them as plain callables.
+
+The address is the temporary part. `examples/expose.py` starts ngrok or
+cloudflared when `PUBLIC_BASE_URL` is not already set, and it lives in the
+examples rather than in the SDK on purpose: it is a workaround until there is
+somewhere to deploy your agent's code directly, and when that arrives this one
+function is all that changes.
+
 ### A starter you can run today
 
 `examples/starter/` is all of the above as a working agent: a mocked system of

@@ -31,8 +31,7 @@ export AGENT_NAME="${AGENT_NAME:-Sam}"
 
 # How this machine becomes reachable is your call. Set PUBLIC_BASE_URL to a
 # staging host or to a tunnel you already run, and no tunnel is started here.
-PUBLIC_BASE_URL="https://placeholder.invalid" $PY -m uvicorn backend:app --port "$PORT" \
-  --log-level warning > "$RUN_DIR/backend.log" 2>&1 &
+PUBLIC_BASE_URL="https://placeholder.invalid" PORT="$PORT" $PY backend.py > "$RUN_DIR/backend.log" 2>&1 &
 echo $! > "$RUN_DIR/backend.pid"
 
 if [ -n "${PUBLIC_BASE_URL:-}" ]; then
@@ -63,7 +62,7 @@ export PUBLIC_BASE_URL="$URL"
 # endpoint and the declaration it imports match what gets deployed.
 kill "$(cat "$RUN_DIR/backend.pid")" 2>/dev/null || true
 sleep 1
-$PY -m uvicorn backend:app --port "$PORT" --log-level warning > "$RUN_DIR/backend.log" 2>&1 &
+PORT="$PORT" $PY backend.py > "$RUN_DIR/backend.log" 2>&1 &
 echo $! > "$RUN_DIR/backend.pid"
 for _ in $(seq 1 20); do curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 1; done
 

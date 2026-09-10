@@ -11,7 +11,7 @@ agent.py     the tools and the declaration       <- your tools, your prompt
 reply.py     what the agent says, as stages      <- your call flow
 flow.py      Stages and Memo, forty lines        <- the organising opinion
 model.py     a model for the turns a script cannot cover
-backend.py   the four surfaces the platform calls (mounted in one call)
+backend.py   serve(): the platform's requests, answered by your functions
 rehearse.py  run a whole call locally, no network
 drive.py     run a call against the deployed agent, no microphone
 deploy.py    create, update, show, delete
@@ -25,7 +25,7 @@ run.sh       backend, address, deploy
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python \
     "git+https://github.com/dan-ince-aai/assemblyai-agents-python.git" \
-    fastapi "uvicorn[standard]" pytest pytest-asyncio httpx
+    pytest pytest-asyncio httpx
 
 .venv/bin/python rehearse.py happy        # a caller who books
 .venv/bin/python rehearse.py by_phone     # recognised from their number

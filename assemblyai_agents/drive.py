@@ -24,7 +24,7 @@ platform still produces reply audio; it is simply not listened to.
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Sequence
+from typing import Callable, Mapping, Optional, Sequence
 
 from ._client import AsyncClient
 from .connection import AgentConnection
@@ -71,6 +71,7 @@ async def scripted_call(
     agent_id: str,
     lines: Sequence[str],
     *,
+    tools: Optional[Mapping[str, Callable]] = None,
     api_key: Optional[str] = None,
     client: Optional[AsyncClient] = None,
     turn_timeout: float = DEFAULT_TURN_TIMEOUT,
@@ -83,10 +84,17 @@ async def scripted_call(
     Returns once the script is finished, the agent stops replying, or the
     session ends. `on_turn(speaker, text)` is called as each turn happens, for
     printing progress.
+
+    `tools` are the handlers this process answers with, keyed by the name the
+    model calls. Pass them whenever the agent has tools declared without an
+    `http=` config: those are resolved by whoever is connected, so without a
+    handler here every call comes back to the model as an error.
     """
     transcript = Transcript()
     replies: asyncio.Queue = asyncio.Queue()
-    conn = AgentConnection(agent_id=agent_id, api_key=api_key, client=client, audio=False, url=url)
+    conn = AgentConnection(
+        agent_id=agent_id, api_key=api_key, client=client, tools=tools, audio=False, url=url
+    )
 
     def record(speaker: str, text: str) -> None:
         transcript.turns.append((speaker, text))
@@ -115,8 +123,16 @@ async def scripted_call(
             await asyncio.wait_for(replies.get(), timeout=turn_timeout)
             for line in lines:
                 record("caller", line)
+                # Both, because the two kinds of agent read a different one.
+                # A reply engine of your own reads the raw transcript and sees
+                # the user message; the platform's own model does not reliably
+                # act on a conversation.message, and needs the line quoted in
+                # the reply instructions instead. Sending both drives either.
                 await conn.say(line)
-                await conn.session.create_reply()
+                await conn.session.create_reply(
+                    f'The caller just said: "{line}". Respond to the caller, '
+                    f"calling your tools as needed."
+                )
                 try:
                     await asyncio.wait_for(replies.get(), timeout=turn_timeout)
                 except asyncio.TimeoutError:

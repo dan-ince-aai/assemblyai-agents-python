@@ -1,92 +1,35 @@
-"""The service the platform calls. Four routes, written out.
+"""The service the platform calls. There is no web framework here.
 
-    pip install fastapi uvicorn
     export TOOL_SECRET=... LLM_API_KEY=...
-    uvicorn backend:app --port 8000
+    python backend.py
 
-    POST /v1/chat/completions   asked what to say on every turn -> reply.py
-    POST /tools/{name}          runs one of the agent's tools
-    POST /pre-connect/lookup    before a phone call is answered; may rewrite the greeting
-    POST /webhooks/voice-agents signed session and call events
-    GET  /healthz               what is loaded
+`serve()` answers the platform's requests with the functions in this project:
+each `@tool` on the declaration, the `decide` in reply.py, and the pre-connect
+handler below. Nothing to install beyond the SDK, and no service to write.
 
-Nothing here is clever, on purpose: this is the file you will want to read when
-something does not arrive, so it says what it does.
+    POST /tools/{name}            the agent's tools
+    POST /v1/chat/completions     reply.decide, streamed
+    POST /pre-connect/lookup      before a phone call is answered
+    POST /webhooks/voice-agents   verified against WEBHOOK_SECRET
+    GET  /healthz
+
+If you would rather host these in your own application, `routes()` from the
+same module hands back the identical handlers as plain callables.
 """
 
-import json
 import os
 
-from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from assemblyai_agents.serving import serve
 
-from assemblyai_agents import WebhookVerificationError, verify
-from assemblyai_agents.byo import Turn, json_body, stream
-
-import model
 import reply
 import store
-from agent import AGENT_NAME, TOOLS, agent
+from agent import AGENT_NAME, agent
 
 TOOL_SECRET = os.environ.get("TOOL_SECRET", "change-me")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "change-me")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
 # Treat any caller as the demo patient, so a call from any handset reaches the
 # personalised greeting. Off by default.
 DEMO_MATCH_ANY = os.environ.get("DEMO_MATCH_ANY", "") not in ("", "0", "false")
-
-BY_NAME = {declared.name: declared for declared in TOOLS}
-app = FastAPI(title=f"{store.PRACTICE} voice backend")
-
-
-def authorize(request: Request, secret: str) -> None:
-    if request.headers.get("Authorization") != f"Bearer {secret}":
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
-@app.get("/healthz")
-def healthz():
-    return {
-        "ok": True,
-        "agent": agent.name,
-        "tools": sorted(BY_NAME),
-        "replies_from_here": bool(agent.llm),
-        "stages": list(reply.stages.names),
-        "model": model.status(),
-    }
-
-
-@app.post("/v1/chat/completions")
-async def replies(request: Request):
-    """What to say next. Every request arrives streaming, so the answer does too."""
-    if request.headers.get("Authorization") != f"Bearer {LLM_API_KEY}":
-        return JSONResponse({"error": {"message": "bad api key"}}, status_code=401)
-    body = await request.json()
-    turn = Turn.from_request(body)
-    answer = reply.decide(turn)
-    stage = reply.stages.current(turn)
-    print(f"[reply] stage={stage.name if stage else '-'} said={turn.caller_said[:48]!r} -> {answer}", flush=True)
-    if body.get("stream"):
-        return StreamingResponse(stream(turn, answer), media_type="text/event-stream")
-    return JSONResponse(json_body(turn, answer))
-
-
-@app.post("/tools/{name}")
-async def run_tool(name: str, request: Request):
-    """Run a tool with the arguments the reply engine asked for."""
-    authorize(request, TOOL_SECRET)
-    declared = BY_NAME.get(name)
-    if declared is None:
-        raise HTTPException(status_code=404, detail=f"no tool named {name!r}")
-    arguments = await request.json()
-    print(f"[tool] {name}({json.dumps(arguments)[:120]})", flush=True)
-    try:
-        result = await declared.invoke(**arguments)
-    except TypeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    print(f"[tool] {name} -> {json.dumps(result, default=str)[:160]}", flush=True)
-    return result
-
 
 # The platform's pre-connect request arrives with an empty body today, so there
 # is no caller number in it to look up. Every plausible field is checked anyway,
@@ -107,22 +50,17 @@ def caller_number(payload: dict) -> str | None:
     return None
 
 
-@app.post("/pre-connect/lookup")
-async def lookup(request: Request):
+def lookup(payload: dict) -> dict:
     """Find the caller before the call is answered, and greet them by name.
 
     Says nothing from their record: nobody has confirmed who picked up yet.
     """
-    authorize(request, TOOL_SECRET)
-    raw = await request.body()
-    payload = json.loads(raw) if raw else {}
     number = caller_number(payload) or os.environ.get("DEMO_CALLER_NUMBER", "")
     patient = store.find_by_phone(number) if number else None
     if patient is None and DEMO_MATCH_ANY:
         patient = next(iter(store.PATIENTS.values()))
     store.remember_in_flight(patient)
     reply.memo.forget()  # a new call starts with nothing remembered
-    print(f"[pre-connect] number={number!r} matched={'yes' if patient else 'no'}", flush=True)
     if patient is None:
         return {"matched": False}
     return {
@@ -137,15 +75,14 @@ async def lookup(request: Request):
     }
 
 
-@app.post("/webhooks/voice-agents")
-async def webhook(request: Request):
-    """Session and call events, signed. Verify over the raw body before parsing."""
-    if WEBHOOK_SECRET is None:
-        raise HTTPException(status_code=503, detail="WEBHOOK_SECRET not configured")
-    body = await request.body()
-    try:
-        event = verify(body, request.headers.get("X-AAI-Signature", ""), WEBHOOK_SECRET)
-    except WebhookVerificationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    print(f"[webhook] {event.get('event') or event.get('type')}", flush=True)
-    return Response(status_code=204)
+if __name__ == "__main__":
+    serve(
+        agent,
+        reply=reply.decide,
+        port=int(os.environ.get("PORT", "8000")),
+        tool_secret=TOOL_SECRET,
+        llm_key=LLM_API_KEY,
+        pre_connect={"/pre-connect/lookup": lookup},
+        webhook_secret=os.environ.get("WEBHOOK_SECRET"),
+        on_event=lambda event: print(f"[webhook] {event.get('event') or event.get('type')}"),
+    )
