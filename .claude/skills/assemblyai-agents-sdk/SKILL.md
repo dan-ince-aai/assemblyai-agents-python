@@ -271,7 +271,19 @@ second completion carrying the result.
 - Own number: `import_(ImportPhoneNumberRequest(phone_number, termination_uri))` then `assign_agent(number, PhoneNumberAssignAgentRequest(agent_id=...), agent=agent)`.
 - Outbound: `client.calls.create(CreateCallRequest(from_number, to_number))`; `from_number` must be on the account with an agent assigned.
 - Human transfer: `transfer_targets=[HumanTransfer(name, phone_number, mode="cold"|"warm", ...)]` **requires** `outbound_trunk_id`. Consult fields are warm-only. E.164 everywhere (`+14155550123`).
-- Telephony audio is `audio/pcmu`/`audio/pcma`; the default `audio/pcm` at 24 kHz is for WebSocket clients. Transfer targets, pre-connect and DTMF do nothing on a WebSocket session.
+- Telephony audio is `audio/pcmu`/`audio/pcma`; the default `audio/pcm` at 24 kHz is for WebSocket clients. Transfer targets and pre-connect do nothing on a WebSocket session.
+- **Keypad (DTMF) capture blocks WebSocket sessions entirely.** A tool with
+  `dtmf_collected_arguments` makes the platform refuse the session with
+  `invalid_value: tool '…' collects '…' from the phone keypad (DTMF), which only
+  exists on telephony calls`, so the connection closes 1008 and nothing runs.
+  When the user wants both keypad capture and a terminal test, put the profiles
+  behind a flag and deploy two shapes from one declaration: with them for the
+  phone number, without them for the WebSocket run.
+- **Every `DtmfCollectionProfile` must state `sensitive`.** The generated model
+  types it optional, but the API rejects a profile that leaves it out
+  (`sensitive: must be stated`). `True` suppresses every spoken and stored trace
+  of the value, which is what a card number or an account number needs; `False`
+  allows read-back, which is fine for an expiry date.
 
 ## Pitfalls the SDK will tell you about (and how to fix them)
 
@@ -287,6 +299,8 @@ second completion carrying the result.
 | `ValidationError: … URL host … does not resolve` on create/update | Tool and pre-connect hostnames must resolve in public DNS: use a tunnel URL, not a placeholder. |
 | `AuthenticationError: Unauthorized` | Wrong or missing `ASSEMBLYAI_API_KEY`, or the key belongs to the other regional host. |
 | `on_error` receives `SessionError(code=agent_not_found)`, then the next send raises `ConnectionClosedError` 1008 | The agent lives on the other regional host or was deleted; `async with conn:` itself does not raise. Redeploy and store the new id. |
+| `session.error invalid_value` naming a tool that "collects … from the phone keypad" | That agent cannot run over WebSocket at all. Deploy a variant without `dtmf_collected_arguments` to test from a terminal. |
+| `ValidationError: … dtmf_collected_arguments[n].sensitive: must be stated` | Set `sensitive=True` or `False` explicitly on every keypad profile. |
 | `say()` produces silence, or the agent answers as if nothing was said | Text turns are not reliably visible to the model. To stand in for a caller in a test, wait for the greeting and then `create_reply(instructions='The caller just said: "…"…')`. |
 | The agent opened with a generic "Hello, how can I help?" instead of the configured greeting | A `reply.create` was sent while the greeting was still playing and replaced it. Inject only after the first agent transcript. |
 | The agent apologises that it cannot access the system | Your tool endpoint was unreachable, slow, or non-2xx. Check the tunnel/server logs and the session's `timeline` artifact. |

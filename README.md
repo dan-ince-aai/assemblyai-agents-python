@@ -538,10 +538,12 @@ from assemblyai_agents.models.rest import DtmfCollectionProfile
 
 @tool(
     http=hosted("/tools/take_payment"),
+    timeout_seconds=120,        # keypad entry plus a confirmation takes a while
     dtmf_collected_arguments=[
         DtmfCollectionProfile(
             parameter_name="card_number", min_digits=15, max_digits=16,
-            sensitive=True, confirm=True,
+            sensitive=True,     # required on every profile, see below
+            confirm=True,
             prompt="Using your keypad, enter your card number, then press pound.",
         )
     ],
@@ -550,6 +552,17 @@ async def take_payment(card_number: str, amount: float) -> dict:
     """Charge the caller's card for the order total."""
     ...
 ```
+
+Two rules the generated model does not express:
+
+- **`sensitive` must be stated** on every profile, `True` or `False`. Leaving it
+  out is rejected with `sensitive: must be stated`. `True` suppresses every
+  spoken and stored trace of the value, which is what a card number needs.
+- **A tool with keypad profiles cannot run over WebSocket.** The platform
+  refuses the session with `invalid_value: tool '…' collects '…' from the phone
+  keypad (DTMF), which only exists on telephony calls` and closes it. If you
+  also want to drive the agent from a terminal, put the profiles behind a flag
+  and deploy two shapes from the one declaration.
 
 ## Webhooks
 
