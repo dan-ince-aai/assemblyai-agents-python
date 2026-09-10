@@ -16,34 +16,6 @@ deliverable is usually a small service plus a declaration, not a client app.
 field and exception). Read it when you need a signature or an exact field name;
 this file covers the workflow and the decisions.
 
-## Start from the starter
-
-Unless the user has an existing project, copy `examples/starter/` out of the
-SDK repo and work in that. It is a running agent with the whole loop already
-wired: a mocked system of record, tools, a staged reply engine, a local
-rehearsal harness, whole-call tests, a scripted driver against the deployed
-agent, and deploy. Renaming it and rewriting four files is faster and far less
-error-prone than assembling the same thing from scratch, and it starts with
-every platform trap below already handled.
-
-```bash
-cp -r <sdk-repo>/examples/starter my-agent && cd my-agent
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python \
-    "git+https://github.com/dan-ince-aai/assemblyai-agents-python.git" \
-    fastapi "uvicorn[standard]" pytest pytest-asyncio httpx
-.venv/bin/python rehearse.py happy      # a whole call, offline, in milliseconds
-.venv/bin/python -m pytest -q
-```
-
-Then change, in this order: `store.py` (their systems), `agent.py` (their tools
-and prompt), `reply.py` (their call flow), `tests/test_call.py` (a test per
-call worth caring about). Read its README for what each file is for.
-
-Build from nothing only when the user asks for something the starter's shape
-does not fit, and even then read `reply.py` and `agent.py` first for the
-conventions.
-
 ## Workflow
 
 1. **Install and check credentials.**
@@ -316,58 +288,6 @@ docs alone):
   by `create_reply()` the way to drive a multi-turn test of a BYO LLM agent, and
   those turns persist, unlike an instruction passed to `create_reply`.
 
-### The `byo` module does the plumbing
-
-`assemblyai_agents.byo` is the contract in this section, already written. Use
-it rather than hand-rolling SSE and transcript parsing:
-
-```python
-from assemblyai_agents.byo import Memo, Responder, mount_fastapi
-
-responder = Responder()
-
-@responder.stage("identify", until=lambda turn: turn.result_of("verify_caller"))
-def identify(turn):
-    if not turn.caller_said:
-        return turn.say("Could you give me your full name?")
-    return turn.call("verify_caller", caller_said=turn.caller_said)
-
-@responder.stage("close")
-def close(turn):
-    return turn.silence()
-
-mount_fastapi(app, responder, tools=TOOLS, tool_secret=..., llm_key=...,
-              pre_connect={"/pre-connect/lookup": lookup}, webhook_secret=...)
-```
-
-What it gives you, each of which is a trap from the list above:
-
-| | |
-| --- | --- |
-| `Turn.from_request(body)` | the request, read: `caller_said`, `spoken`, `tools`, `preconnect`, `pending`, `results` |
-| `turn.pending` | the tool result nothing has been said about yet, which is the cue to speak; `None` once something has |
-| `turn.pending.ran` | `False` when the platform refused or failed the call, so a refusal is never reported as a result |
-| `turn.preconnect` | the pre-connect captures, read out of the `aai_pre_connect_context` result |
-| `turn.result_of(name)` | an earlier result, to read back rather than call again |
-| `turn.answer_following(fragment)` | the caller's reply to a question you asked, for a value collected over turns |
-| `turn.call(name, **args)` | drops arguments the call has not established, so the platform accepts it |
-| `turn.say(text)` / `turn.silence()` | words, or nothing, which is how a finished call ends |
-| `Responder` / `.stage(name, until=...)` | ordered stages, each handing over when its own test passes |
-| `responder.respond(body)` | a `Reply` with `.stream()`, `.json()`, `.spoken`, `.tool` |
-| `mount_fastapi(...)` | every route the platform calls, with the auth checks |
-| `Memo` | a note of what has been said, for lines an interrupted turn would otherwise repeat |
-| `digits_said(text)` | digits out of "four four seven one", "forty one eleven", "double one" |
-| `tool_runner(TOOLS)` | run a tool by name, with a bad name and bad arguments told apart |
-
-`scripted_call(agent_id, lines)` from `assemblyai_agents.drive` is the matching
-test driver: it opens a real session with device audio off, sends each line as
-a user turn, and hands back a `Transcript` with `.spoken` and `.agent_lines`.
-
-Nothing in the SDK knows what a tunnel is. How the developer's machine becomes
-reachable is their choice; `examples/e2e_check.py` will start ngrok or
-cloudflared as a convenience, and takes `--public-url` when they already have
-an address.
-
 ### Deterministic script, or a model?
 
 For a regulated script the answer is both, split by decision rather than by
@@ -385,13 +305,6 @@ official wording plus what the caller actually said, and have it convey the one
 while answering the other. Keep the canned text as the fallback for when the
 model is slow or unavailable, and give the model call a timeout well inside the
 platform's ten seconds.
-
-In practice that is three model calls and no more: classify what the caller
-wants when keywords cannot; judge a yes or no that the words do not settle
-("uh-huh" is a yes, and a consent question asked twice is how a call starts to
-loop); and deliver a settled position. `examples/starter/model.py` is those
-three, with an off switch, and every test in the starter runs with the model
-off so the fallback wording stays honest.
 
 A working endpoint, tools and replies in one service, is `byo_llm_server.py` in
 the SDK repo's `examples/`. `scripts/e2e_check.py` exercises it: with the

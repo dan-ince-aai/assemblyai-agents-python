@@ -10,11 +10,8 @@
 
 What it does, in order:
 
-1. Gets a public HTTPS address for your local port. Pass ``--public-url`` if
-   you already have one, from a tunnel you run yourself or a staging host;
-   otherwise, as a convenience, it starts ngrok or cloudflared for you. How
-   your machine becomes reachable is your business, not the SDK's: nothing in
-   ``assemblyai_agents`` knows what a tunnel is.
+1. Opens a tunnel (ngrok if available, else cloudflared) to a local port and
+   waits until the public HTTPS URL answers.
 2. Sets ``PUBLIC_BASE_URL`` to that URL and imports your declaration module, so
    every ``http=`` tool URL and pre-connect URL points at the tunnel. Your
    declaration must build those URLs from ``PUBLIC_BASE_URL`` (see pizza_line.py).
@@ -327,17 +324,7 @@ def main() -> int:
     parser.add_argument("--utterance", required=True, help="what the caller says, phrased to make the model call a tool")
     parser.add_argument("--tool", help="name of the tool that must be reached (default: any HTTP tool)")
     parser.add_argument("--port", type=int, default=8788)
-    parser.add_argument(
-        "--public-url",
-        metavar="URL",
-        help="an HTTPS address that already reaches --port; skips starting a tunnel",
-    )
-    parser.add_argument(
-        "--tunnel",
-        choices=["auto", "ngrok", "cloudflared"],
-        default="auto",
-        help="which tunnel to start when --public-url is not given",
-    )
+    parser.add_argument("--tunnel", choices=["auto", "ngrok", "cloudflared"], default="auto")
     parser.add_argument("--forward", metavar="URL", help="proxy requests to your own running backend, e.g. http://127.0.0.1:8000, instead of serving the tools here")
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument("--wait", type=float, default=45, help="seconds to wait per attempt (greeting included) for the platform's tool call")
@@ -349,14 +336,9 @@ def main() -> int:
         sys.exit("set ASSEMBLYAI_API_KEY")
     log_path = os.path.join(os.environ.get("TMPDIR", "/tmp"), "e2e_check_tunnel.log")
 
-    tunnel = None
-    if args.public_url:
-        public_url = args.public_url.rstrip("/")
-        print(f"1. using the address you gave: {public_url}  ->  http://127.0.0.1:{args.port}")
-    else:
-        print("1. opening a tunnel (pass --public-url to use your own)")
-        tunnel, public_url = start_tunnel(args.tunnel, args.port, log_path)
-        print(f"   {public_url}  ->  http://127.0.0.1:{args.port}   (log: {log_path})")
+    print("1. opening tunnel")
+    tunnel, public_url = start_tunnel(args.tunnel, args.port, log_path)
+    print(f"   {public_url}  ->  http://127.0.0.1:{args.port}   (log: {log_path})")
 
     created = None
     httpd = None
@@ -430,12 +412,11 @@ def main() -> int:
                 print(f"could not delete {created.id}: {exc}")
         if httpd is not None:
             httpd.shutdown()
-        if tunnel is not None:
-            tunnel.terminate()
-            try:
-                tunnel.wait(5)
-            except Exception:
-                tunnel.kill()
+        tunnel.terminate()
+        try:
+            tunnel.wait(5)
+        except Exception:
+            tunnel.kill()
 
 
 if __name__ == "__main__":

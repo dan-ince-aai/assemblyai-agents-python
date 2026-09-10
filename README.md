@@ -655,83 +655,12 @@ agent = VoiceAgent(
 )
 ```
 
-### `assemblyai_agents.byo` writes the plumbing
-
-Reading the transcript and streaming Server-Sent Events is contract detail, not
-your agent. `byo` is that detail:
-
-```python
-from assemblyai_agents.byo import Memo, Responder, mount_fastapi
-
-responder = Responder()
-
-@responder.stage("identify", until=lambda turn: turn.result_of("verify_caller"))
-def identify(turn):
-    if not turn.caller_said:
-        return turn.say("Could you give me your full name?")
-    return turn.call("verify_caller", caller_said=turn.caller_said)
-
-@responder.stage("book", until=lambda turn: turn.result_of("book_appointment"))
-def book(turn):
-    if turn.pending and turn.pending.name == "find_slots":
-        return turn.say(f"I can offer {turn.pending.get('slots')[0]['spoken']}. Does that work?")
-    return turn.call("find_slots", preference_said=turn.caller_said)
-
-@responder.stage("close")
-def close(turn):
-    return turn.silence()
-
-mount_fastapi(app, responder, tools=TOOLS, tool_secret=..., llm_key=...)
-```
-
-A call has a shape, and each part wants different machinery: the ends are
-usually a script, the middle is a conversation. Stages let each part be its own
-small agent, handing over when its own test passes, instead of one handler full
-of conditions. A scripted stage never reaches for a model, so its wording
-cannot drift.
-
-`Turn` is the request already read, with the traps handled: `turn.pending` is
-the tool result nothing has been said about yet, and `turn.pending.ran` is
-`False` when the platform refused the call, so a refusal is never reported as a
-result. `turn.preconnect` holds the pre-connect captures.
-`turn.call(...)` drops arguments the conversation never established.
-`turn.answer_following("your postcode?")` reads a value you collected over
-several turns back out of the transcript. `Memo` keeps a note of lines that
-must be said exactly once, which the transcript alone cannot tell you because
-an interrupted turn does not always come back. `digits_said("four four seven
-one")` gives you `4471`.
-
-For a whole call against a deployed agent, with no microphone:
-
-```python
-from assemblyai_agents.drive import scripted_call
-
-transcript = await scripted_call(agent_id, ["Hi, I need to book", "It's four four seven one"])
-assert "booked in for" in transcript.spoken
-```
-
-### A starter you can run today
-
-`examples/starter/` is all of the above as a working agent: a mocked system of
-record, five tools, a staged reply engine, a model for the turns a script
-cannot cover, an offline rehearsal harness, fourteen whole-call tests, a
-scripted driver, and deploy. Copy it, rename it, and change four files.
-
-```bash
-cp -r examples/starter my-agent && cd my-agent
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python \
-    "git+https://github.com/dan-ince-aai/assemblyai-agents-python.git" \
-    fastapi "uvicorn[standard]" pytest pytest-asyncio httpx
-.venv/bin/python rehearse.py happy      # a whole call, offline
-.venv/bin/python -m pytest -q
-```
-
-`examples/byo_llm_server.py` is the smaller version of the same idea, for
-reading in one sitting: `server.py` plus a `POST /v1/chat/completions` route,
-with a responder that is a few lines of plain Python. The platform cannot tell
-what is behind the schema, so a decision tree, an open-weights model you host,
-or a retrieval pipeline all work the same way.
+`examples/byo_llm_server.py` is a working endpoint: it is `server.py` plus a
+`POST /v1/chat/completions` route, so one service owns the tools *and* the
+replies. Its "model" is a few lines of Python that read the transcript and
+decide, which is the point: the platform cannot tell what is behind the schema,
+so a decision tree, an open-weights model you host, or a retrieval pipeline all
+work the same way.
 
 ```bash
 # one service: LLM + tools + webhooks
