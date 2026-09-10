@@ -240,6 +240,13 @@ Pin payloads with `assert agent.to_request() == AgentCreateRequest(...)` or `age
 `pcm_to_base64(bytes) -> str`, `base64_to_pcm(str) -> bytes`, `pcm16_to_ulaw`, `ulaw_to_pcm16`, `pcm16_to_alaw`, `alaw_to_pcm16`;
 `await microphone_stream(session, *, sample_rate=24000, frames_per_buffer=480, device=None)`; `PlaybackSink(*, sample_rate=24000, frames_per_buffer=480, device=None)` (async context manager; `.handle(event)` routes `reply.*`/`input.speech.started` for playback + barge-in).
 
+## LLM gateway
+
+`https://llm-gateway.assemblyai.com/v1`, OpenAI-compatible, takes the same `ASSEMBLYAI_API_KEY`. Useful for subagent stages that each want a different model. `GET /v1/models` lists them; the Claude family includes `claude-haiku-4-5-20251001`, `claude-sonnet-4-6` and `claude-opus-5`.
+
+- **The newer Opus models refuse `temperature`** — `400 {"errors":["model claude-opus-5 does not support temperature"]}`. Omit it, or retry once without it.
+- It refuses the platform's transcript as it stands: assistant lines arrive with a trailing space, system messages appear mid-list, and tool history for tools the request does not declare is rejected. Flatten prior calls and results into plain user notes and end the list on a user turn.
+
 ## Serving the backend
 
 `assemblyai_agents.serving` answers everything the platform sends, off the declaration, on the standard library alone.

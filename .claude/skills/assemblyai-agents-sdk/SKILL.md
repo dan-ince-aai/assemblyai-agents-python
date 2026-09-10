@@ -191,6 +191,17 @@ Four things to get right, all of them learned by getting them wrong:
   notes. Also strip trailing whitespace from assistant lines and make sure the
   message list ends on a user turn, both of which a gateway will refuse.
 
+- **The newer Opus models reject `temperature` outright**, with a 400 whose body
+  names it (`model claude-opus-5 does not support temperature`). On a call that
+  costs the whole turn, so send the request without it for those models, or
+  retry once without it and remember which models refused.
+- **Give each stage its own time budget.** The platform gives a reply endpoint
+  about ten seconds and the caller hears silence for all of it, so a stronger
+  model buys its extra time from somewhere. Budget the stage that runs once
+  generously and the ones that run every turn tightly.
+- **Every fallback should still do the stage's work.** A gateway will eventually
+  be slow, and a fallback that only re-asks the question makes the caller repeat
+  themselves. Have it act on the line when the line is clear enough to act on.
 - **Rehearse a subagent with real tool schemas.** A subagent reads descriptions
   and parameters out of `turn.request["tools"]` to decide what to offer its
   model, so a harness that stubs them as `{"parameters": {}}` rehearses a bug:
