@@ -65,6 +65,12 @@ already has one, mount `routes(agent, ...)` into it.
   card_number (too_short), so the tool was not called" is a real result.
   Reporting that to the caller as a failure of the thing they were doing is a
   lie. Distinguish did-not-run from ran-and-failed.
+- **There is no session id on a reply request.** The body carries the whole
+  transcript and nothing naming the call, so per-call state cannot be a dict
+  keyed by session. Read state back out of the transcript, and for the one
+  thing it cannot tell you — what the agent already said, since a line the
+  caller talked over never comes back — keep a note keyed on a value the call
+  established.
 - **A subagent prompt replaces the platform's**, including the spoken-output
   guidance it normally appends. Without those rules re-stated, a model emits
   markdown into speech.

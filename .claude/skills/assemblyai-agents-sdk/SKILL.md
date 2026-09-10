@@ -418,6 +418,20 @@ What it gives you, each of which is a trap from the list above:
 | `stream(turn, answer)` / `json_body(turn, answer)` | the streaming shape, and the plain one for curl |
 | `digits_said(text)` | digits out of "four four seven one", "forty one eleven", "double one" |
 
+**There is no session id on the request.** A chat-completions body carries the
+transcript and nothing that names the call, so a `dict` keyed by session is not
+available to you. Two things follow, and both matter:
+
+- **Read state back out of the transcript**, which arrives in full on every
+  turn. That is what `turn.result_of(name)`, `turn.preconnect` and
+  `turn.answer_following(fragment)` are for, and it is why the reply function
+  can be stateless and still know what has happened.
+- **For the one thing the transcript cannot tell you** — what the agent has
+  already *said*, since a line the caller talked over never comes back — keep
+  your own note, and key it on a value the call established. The starter's
+  `call_key(turn)` is the patient reference once known, falling back to
+  `"unidentified"`. Do not key on the caller's number: it is not in the body.
+
 How `decide` is organised is not the SDK's business. The starter shows one way,
 `Stages` and `Memo` in its own `flow.py`, forty lines you can read and change.
 Reach for that shape when a call has scripted ends and a conversational middle;
