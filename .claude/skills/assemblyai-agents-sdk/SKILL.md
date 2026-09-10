@@ -137,9 +137,17 @@ with public_address(PORT) as base_url:
     serve(agent, reply=decide, port=PORT, tool_secret=SECRET, llm_key=SECRET)
 ```
 
-`examples/one_file_agent.py` is that in a single file; `examples/starter/run.py`
-is the same three steps for a bigger project. Point a phone number at the agent
-id either prints and a real caller takes the identical path.
+`examples/tools_only_agent.py` is that in a single file, with the platform's
+own model running the conversation and the script answering only tool calls.
+`examples/one_file_agent.py` is the same with `llm=` added, so the script
+decides every reply too. `examples/starter/run.py` is the same three steps for
+a bigger project. Point a phone number at the agent id any of them prints and a
+real caller takes the identical path.
+
+Start a user on tools only. Move them to their own replies when a prompt is not
+a strong enough guarantee for what has to be said: on a test call the tools-only
+agent looked a value up correctly and then answered a different question, which
+is fine for a shop and not fine for a disclosure.
 
 Two habits that follow from this:
 

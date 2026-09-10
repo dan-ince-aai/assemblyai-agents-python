@@ -156,8 +156,10 @@ client = Client(base_url="https://agents.us.assemblyai.com")
 
 The `examples/` directory contains the complete, runnable version of this
 walkthrough: `pizza_line.py` (the declaration), `server.py` (the service),
-`deploy.py` and `phone.py`. `one_file_agent.py` is the same idea in a single
-script, and `starter/` is a fuller project to copy.
+`deploy.py` and `phone.py`. Two single scripts stand alone:
+`tools_only_agent.py`, where the platform's model runs the conversation and
+your code only answers tool calls, and `one_file_agent.py`, which adds your own
+reply generation. `starter/` is a fuller project to copy.
 
 ### 1. Declare the agent
 
@@ -683,6 +685,20 @@ platform accepts the call.
 How you organise `decide` is up to you. The starter shows one way, as forty
 lines of ordered stages in its own file, because that is an opinion and
 opinions belong in an example rather than in the SDK.
+
+### Two shapes, and which to start with
+
+| | The platform's model talks | You decide every reply |
+| --- | --- | --- |
+| Declaration | tools only | tools plus `llm=` |
+| You write | `@tool` functions | `@tool` functions and `decide(turn)` |
+| Shaped by | the system prompt | your code |
+| Example | `examples/tools_only_agent.py` | `examples/one_file_agent.py` |
+
+Start with tools only. Move to your own replies when a prompt is not a strong
+enough guarantee: a disclosure that has to be read word for word, a fixed order
+of steps, an amount that must come from a ledger rather than from a sentence.
+Both are the same file underneath, and both serve their tools the same way.
 
 ### One file, no backend
 
