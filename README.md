@@ -655,12 +655,82 @@ agent = VoiceAgent(
 )
 ```
 
-`examples/byo_llm_server.py` is a working endpoint: it is `server.py` plus a
-`POST /v1/chat/completions` route, so one service owns the tools *and* the
-replies. Its "model" is a few lines of Python that read the transcript and
-decide, which is the point: the platform cannot tell what is behind the schema,
-so a decision tree, an open-weights model you host, or a retrieval pipeline all
-work the same way.
+### `assemblyai_agents.byo` reads the request and answers it
+
+Reading the transcript and streaming Server-Sent Events is contract detail, not
+your agent. `byo` is that detail and nothing else: thirteen names, no
+framework, no opinion about how you decide.
+
+```python
+from assemblyai_agents.byo import Turn, call_tool, say, silence, stream
+
+def decide(turn):
+    if turn.pending and turn.pending.name == "verify_caller":
+        return say("Thanks, how can I help?") if turn.pending.get("verified") else say("Try again?")
+    if not turn.caller_said:
+        return say("Could you give me your full name?")
+    return call_tool("verify_caller", caller_said=turn.caller_said)
+
+@app.post("/v1/chat/completions")          # any framework; this one is FastAPI
+async def replies(request: Request):
+    body = await request.json()
+    turn = Turn.from_request(body)
+    return StreamingResponse(stream(turn, decide(turn)), media_type="text/event-stream")
+```
+
+Three functions say what happens next: `say(text)`, `call_tool(name, **args)`
+and `silence()`, which is how a finished call ends since an agent cannot hang
+up. `call_tool` drops arguments the conversation never established, so the
+platform accepts the call.
+
+`Turn` is the request already read, with the traps handled:
+
+| | |
+| --- | --- |
+| `turn.caller_said` | the caller's latest words, from a user message or a quoted instruction |
+| `turn.pending` | the tool result nothing has been said about yet, which is the cue to speak |
+| `turn.pending.ran` | `False` when the platform refused the call, so a refusal is never reported as a result |
+| `turn.preconnect` | the pre-connect captures, read out of the tool result the platform injects |
+| `turn.result_of(name)` | an earlier result, to read back rather than call again |
+| `turn.answer_following("your postcode?")` | a value you collected over several turns |
+| `turn.said_before(line)` | with the caveat that an interrupted turn does not always come back |
+| `digits_said("four four seven one")` | `"4471"`, and `"forty one eleven"` gives `"4111"` |
+
+How you organise `decide` is up to you. The starter shows one way, as forty
+lines of ordered stages in its own file, because that is an opinion and
+opinions belong in an example rather than in the SDK.
+
+For a whole call against a deployed agent, with no microphone:
+
+```python
+from assemblyai_agents.drive import scripted_call
+
+transcript = await scripted_call(agent_id, ["Hi, I need to book", "It's four four seven one"])
+assert "booked in for" in transcript.spoken
+```
+
+### A starter you can run today
+
+`examples/starter/` is all of the above as a working agent: a mocked system of
+record, five tools, a staged reply engine, a model for the turns a script
+cannot cover, an offline rehearsal harness, fourteen whole-call tests, a
+scripted driver, and deploy. Copy it, rename it, and change four files.
+
+```bash
+cp -r examples/starter my-agent && cd my-agent
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python \
+    "git+https://github.com/dan-ince-aai/assemblyai-agents-python.git" \
+    fastapi "uvicorn[standard]" pytest pytest-asyncio httpx
+.venv/bin/python rehearse.py happy      # a whole call, offline
+.venv/bin/python -m pytest -q
+```
+
+`examples/byo_llm_server.py` is the smaller version of the same idea, for
+reading in one sitting: `server.py` plus a `POST /v1/chat/completions` route,
+with a responder that is a few lines of plain Python. The platform cannot tell
+what is behind the schema, so a decision tree, an open-weights model you host,
+or a retrieval pipeline all work the same way.
 
 ```bash
 # one service: LLM + tools + webhooks

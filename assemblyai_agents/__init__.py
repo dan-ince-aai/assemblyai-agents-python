@@ -34,6 +34,7 @@ from .audio import (
 )
 from .audio_io import DeviceAudioNotInstalledError, PlaybackSink, microphone_stream
 from .connection import AgentConnection, ToolRouter
+from .drive import Transcript, scripted_call
 
 # The generated request models a customer has to construct to reach the raw
 # escape hatch. Only these five are re-exported: the rest of `models.rest` is
@@ -118,6 +119,8 @@ __all__ = [
     "microphone_stream",
     "AgentConnection",
     "ToolRouter",
+    "scripted_call",
+    "Transcript",
     "VoiceAgent",
     "AudioFormat",
     "AudioInput",

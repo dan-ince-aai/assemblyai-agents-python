@@ -167,6 +167,31 @@ plus `UnknownEvent(type, raw)` for anything unrecognised (a top-level export def
 
 Wire audio: 16-bit little-endian mono PCM, 24 kHz (`audio/pcm`); telephony encodings 8 kHz μ-law / A-law.
 
+## byo: writing the replies
+
+`assemblyai_agents.byo` — everything in *Backend contracts* below, already handled.
+
+```python
+from assemblyai_agents.byo import (
+    Turn, ToolResult, Say, Call, Silence,
+    say, call_tool, silence, stream, json_body, established, digits_said,
+)
+```
+
+- `Turn.from_request(body) -> Turn`: `.request .messages .tool_names .caller_said .spoken .preconnect .pending .results`; methods `.said_before(marker)`, `.answer_following(fragment)`, `.result_of(name, arguments=None)`, `.has(tool)`, and the verbs `.say(text)`, `.call(name, **args)`, `.silence()`.
+  - `.caller_said` prefers a `user` message, falling back to text a `system` message quotes (how a test driver injects a turn); the platform's own notes use single quotes and never match.
+  - `.pending` is the newest `ToolResult` with no assistant text after it — the cue to speak — and `None` once something has been said or when the result is the pre-connect context.
+  - `.preconnect` is the `{"variables": {...}}` from the `aai_pre_connect_context` result the platform injects on a phone call.
+- `ToolResult`: `.name .arguments .value .ran .note`, `.get(key)`, `.keypad_incomplete`. `ran=False` means the platform refused or failed the call and `note` is its prose; never report that as the tool's outcome.
+- `say(text)` / `call_tool(name, **arguments)` / `silence()` build the three answers, typed `Say`, `Call` and `Silence`. `call_tool` drops arguments whose value is `None` or `""`, because the platform refuses values the call never established; `established(**kwargs)` does that on its own.
+- `stream(turn, answer, chunk_words=True)` yields the SSE lines; `json_body(turn, answer)` is the same answer as a plain body, for curl and tests. Pass them to whatever your framework wants.
+- `digits_said(text)` — digits from figures or words, merging "forty one" into 41 and expanding "double one".
+- There is no framework here, and nothing that imports a web library. How you organise the decision, and which routes you expose, is yours; `examples/starter/flow.py` and `examples/starter/backend.py` show one way.
+
+`assemblyai_agents.drive` — `await scripted_call(agent_id, lines, *, api_key=None, client=None, turn_timeout=45, linger=2, on_turn=None, url=None) -> Transcript`, and `call(...)` for synchronous code. `Transcript`: `.session_id .turns .errors .timed_out .agent_lines .caller_lines .spoken .ok`. Device audio is off and each line is sent as a real `user` turn, which persists and which a BYO reply engine can read.
+
+Nothing in this package knows what a tunnel is. `examples/e2e_check.py` starts ngrok or cloudflared as a convenience and takes `--public-url` when you already have an address.
+
 ## Backend contracts
 
 - **Unestablished values are refused.** Before running a tool the platform checks that each argument's value appeared in the call, and refuses the call otherwise with a `tool` message plus a system note ("The call has not established a value for X … Never invent a value"). `""` counts as invented: omit unknown optionals. Values from an earlier tool result, or spoken by the caller, are accepted.

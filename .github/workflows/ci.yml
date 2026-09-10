@@ -1,8 +1,9 @@
 name: CI
 
 on:
+  # Every branch, not just main, so a pull request has checks on it before it
+  # is reviewed rather than after it is merged.
   push:
-    branches: [main]
   pull_request:
 
 jobs:
