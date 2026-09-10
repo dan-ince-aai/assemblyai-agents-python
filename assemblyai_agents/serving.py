@@ -27,6 +27,7 @@ handlers as plain callables to mount wherever you like.
 import asyncio
 import json
 import re
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping, Optional
@@ -164,6 +165,28 @@ def routes(
         table[("POST", re.compile(rf"^{re.escape(path)}$"))] = wrap()
 
     return table
+
+
+def claim_port(host: str = "0.0.0.0", port: int = 8000) -> None:
+    """Fail now if the port is taken, before anything irreversible happens.
+
+    Deploy is the step that repoints a stored agent, and it runs before
+    `serve()` binds — so without this, a second run of a script whose first run
+    is still holding the port updates the live agent and only then dies, leaving
+    a reachable agent whose tool URLs answer to nothing. Call this first.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((host, port))
+    except OSError as exc:
+        raise OSError(
+            f"cannot serve on {host}:{port}: {exc}. Something else is holding it — "
+            f"usually an earlier run of this script, which on macOS is a process "
+            f"named `Python`, not `python`. Stop it (`lsof -ti :{port} | xargs kill`), "
+            f"or set PORT to a free one."
+        ) from exc
+    finally:
+        probe.close()
 
 
 def serve(

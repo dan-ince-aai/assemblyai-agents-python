@@ -39,7 +39,12 @@ def main() -> int:
         # the tool URLs are read from here at import time.
         os.environ["PUBLIC_BASE_URL"] = base_url
 
-        from assemblyai_agents.serving import serve
+        from assemblyai_agents.serving import claim_port, serve
+
+        # Before the deploy, not after: deploy repoints the stored agent, and a
+        # port already held by an earlier run would otherwise leave a live agent
+        # whose tool URLs answer to nothing.
+        claim_port(port=PORT)
 
         import backend
         import reply

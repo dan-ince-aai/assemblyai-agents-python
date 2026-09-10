@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import functools
 import inspect
 import re
@@ -22,6 +23,7 @@ from ._schema import _render, derive_schema
 from .models.rest import (
     DtmfCollectionProfile,
     ExecutionMode,
+    HttpMethod,
     PlaintextHttpToolConfig,
     PlaintextToolDefinition,
     ResponseInstructions,
@@ -135,6 +137,42 @@ class Tool:
             response_instructions=spec.response_instructions,
             http=spec.http,
             dtmf_collected_arguments=spec.dtmf_collected_arguments,
+        )
+
+    def hosted_at(
+        self,
+        url: str,
+        *,
+        http_method: Any = None,
+        headers: Optional[list] = None,
+    ) -> "Tool":
+        """The same tool, pointed at an address the platform can reach.
+
+        A tunnel's address does not exist when the module is imported, so an
+        `http=` passed to `@tool` cannot carry one. Build the declaration in a
+        function that takes the address and bind the tools there:
+
+            tools = [declared.hosted_at(f"{base_url}/tools/{declared.name}",
+                                        headers=[auth]) for declared in TOOLS]
+
+        A new `Tool` comes back and the original is untouched, so the module
+        level list stays importable by tests and one address cannot leak into
+        another declaration.
+        """
+        if not url.startswith("https://") and not url.startswith("http://"):
+            raise ConfigurationError(
+                f"tool `{self.name}`: `{url}` is not an http(s) URL. The platform "
+                f"fetches this address itself, so it has to be one it can reach."
+            )
+        return Tool(
+            dataclasses.replace(
+                self._spec,
+                http=PlaintextHttpToolConfig(
+                    url=url,
+                    http_method=http_method or HttpMethod.POST,
+                    headers=list(headers) if headers else None,
+                ),
+            )
         )
 
     async def invoke(self, *, context: Any = None, **arguments) -> Any:

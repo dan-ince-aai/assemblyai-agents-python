@@ -170,6 +170,11 @@ down.
 | stages, cost control, or a stage that provably cannot do certain things | subagent routing | `examples/subagents.py` |
 | a project rather than a script | the starter kit | `examples/starter/` |
 
+`pip install` gives you the `assemblyai_agents` package, not the examples.
+Clone the repo to copy one, and take `expose.py` with it — every shape imports
+`public_address` from that file, and it is not part of the package.
+`examples/starter/` ships its own copy, so that directory stands alone.
+
 ### Run one
 
 ```bash
@@ -210,21 +215,11 @@ call.
 ```python
 import os
 from assemblyai_agents import VoiceAgent, tool
-from assemblyai_agents.models.rest import (
-    HttpMethod, HttpToolHeaderInput, PlaintextHttpToolConfig,
-)
+from assemblyai_agents.models.rest import HttpToolHeaderInput
 
-BASE_URL = os.environ["PUBLIC_BASE_URL"]   # public HTTPS address of this process
 TOOL_SECRET = os.environ["TOOL_SECRET"]    # presented back to you on every call
 
-def hosted(path: str) -> PlaintextHttpToolConfig:
-    return PlaintextHttpToolConfig(
-        url=f"{BASE_URL}{path}",
-        http_method=HttpMethod.POST,
-        headers=[HttpToolHeaderInput(name="Authorization", value=f"Bearer {TOOL_SECRET}")],
-    )
-
-@tool(timeout_seconds=10, http=hosted("/tools/lookup_order"))
+@tool(timeout_seconds=10)
 async def lookup_order(order_id: str) -> dict:
     """Look up the status of a customer's order by its order number.
 
@@ -233,22 +228,37 @@ async def lookup_order(order_id: str) -> dict:
     """
     return await orders.status(order_id)     # your database, your API, anything
 
-agent = VoiceAgent(
-    name="Pizza Line",
-    voice="ivy",
-    system_prompt="""
-        You answer order-status questions for Pizza Palace.
-        Keep replies to one or two short sentences.
-        For any question about an order, call lookup_order and read back the
-        status and ETA.
-    """,
-    greeting="Pizza Palace, how can I help?",
-    tools=[lookup_order],
-)
+TOOLS = [lookup_order]
+
+def build(base_url: str) -> VoiceAgent:
+    """The declaration, with every tool pointed back at this process."""
+    auth = HttpToolHeaderInput(name="Authorization", value=f"Bearer {TOOL_SECRET}")
+    return VoiceAgent(
+        name="Pizza Line",
+        voice="ivy",
+        system_prompt="""
+            You answer order-status questions for Pizza Palace.
+            Keep replies to one or two short sentences.
+            For any question about an order, call lookup_order and read back the
+            status and ETA.
+        """,
+        greeting="Pizza Palace, how can I help?",
+        tools=[
+            declared.hosted_at(f"{base_url}/tools/{declared.name}", headers=[auth])
+            for declared in TOOLS
+        ],
+    )
 ```
 
+`http=` cannot be passed to `@tool` here, because a tunnel's address does not
+exist when the module is imported and that is when the decorator runs.
+`hosted_at` returns a **new** tool bound to an address and leaves the original
+alone, so `TOOLS` stays importable by tests and one run's tunnel cannot leak
+into a later declaration. With a fixed address a module-level `VoiceAgent` is
+fine; under a tunnel, write `build(base_url)`.
+
 `VoiceAgent` is a frozen declaration: every field maps onto the create request,
-and `agent.to_request()` returns the exact model the SDK sends, so you can
+and `build(url).to_request()` returns the exact model the SDK sends, so you can
 inspect or assert on it without touching the network. The system prompt is
 dedented and stripped, so an indented triple-quoted block is fine. Nothing in
 this module touches the network at import time, so tests can import it.

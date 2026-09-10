@@ -86,6 +86,15 @@ Rules (violations raise `ConfigurationError` at decoration):
 
 Platform tools (server-owned, listed by `client.builtin_tools.list()`): `aai_credit_card_luhn_check`, `aai_pre_connect_context`.
 
+### `Tool.hosted_at(url, *, http_method=POST, headers=None)`
+
+Returns a **new** `Tool` bound to `url`, leaving the original unbound. The way to point tools at an address that does not exist at import time, which is every tunnel: declare tools bare, keep them in a module-level `TOOLS`, and bind them inside `build(base_url)`. Raises `ConfigurationError` on a non-http(s) URL. Everything else — name, description, schema, timeout, handler — is carried over unchanged.
+
+```python
+auth = HttpToolHeaderInput(name="Authorization", value=f"Bearer {TOOL_SECRET}")
+tools = [t.hosted_at(f"{base_url}/tools/{t.name}", headers=[auth]) for t in TOOLS]
+```
+
 ## Audio config
 
 ```python

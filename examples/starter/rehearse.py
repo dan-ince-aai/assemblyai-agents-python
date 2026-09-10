@@ -81,7 +81,24 @@ def run(
 
     messages.append({"role": "assistant", "content": greeting})
     transcript.append(("agent", greeting))
-    tools = [{"type": "function", "function": {"type": "function", "name": name, "parameters": {}}} for name in BY_NAME]
+    # The real schemas, not stubs. A reply engine that only reads tool *names*
+    # would not notice the difference, but a subagent design reads descriptions
+    # and parameters out of `turn.request["tools"]` to decide what to offer its
+    # model — and a rehearsal that hands it empty ones is a rehearsal of a bug.
+    # The doubly-nested `type` is the platform's own shape, reproduced here.
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "type": "function",
+                "name": declared.name,
+                "description": declared.spec.description,
+                "parameters": declared.spec.parameters,
+                "timeout_seconds": declared.spec.timeout_seconds,
+            },
+        }
+        for declared in BY_NAME.values()
+    ]
 
     for line in caller_lines:
         messages.append({"role": "user", "content": line})

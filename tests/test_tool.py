@@ -364,3 +364,69 @@ async def test_a_parameter_with_no_type_hint_is_refused():
             return {}
 
     assert "no type hint" in str(exc_info.value)
+
+
+# --------------------------------------------------------------------------- hosted_at
+
+
+def _shelf():
+    @tool(timeout_seconds=9)
+    def check_stock(item: str, aisle: int = 1) -> dict:
+        """Check whether an item is on the shelf.
+
+        Args:
+            item: What the caller asked for.
+            aisle: Where to look first.
+        """
+        return {"in_stock": 3}
+
+    return check_stock
+
+
+def test_hosted_at_binds_an_address_the_decorator_could_not_know():
+    # A tunnel address does not exist at import, which is when `@tool` runs, so
+    # this is the supported way to point a declared tool at one.
+    bound = _shelf().hosted_at("https://demo.ngrok-free.app/tools/check_stock")
+    assert bound.definition().http.url == "https://demo.ngrok-free.app/tools/check_stock"
+    assert bound.definition().http.http_method == HttpMethod.POST
+
+
+def test_hosted_at_leaves_the_original_alone():
+    # The module-level tool stays importable by tests, and one run's tunnel
+    # cannot leak into a declaration built later in the same process.
+    declared = _shelf()
+    declared.hosted_at("https://demo.ngrok-free.app/tools/check_stock")
+    assert declared.spec.http is None
+
+
+def test_hosted_at_keeps_everything_the_model_reads():
+    declared = _shelf()
+    bound = declared.hosted_at("https://demo.ngrok-free.app/tools/check_stock")
+    assert bound.name == declared.name
+    assert bound.spec.description == declared.spec.description
+    assert bound.spec.parameters == declared.spec.parameters
+    assert bound.spec.timeout_seconds == 9
+    assert bound.spec.target is declared.spec.target
+
+
+def test_hosted_at_carries_headers_and_method():
+    bound = _shelf().hosted_at(
+        "https://demo.ngrok-free.app/stock",
+        http_method=HttpMethod.GET,
+        headers=[HttpToolHeaderInput(name="Authorization", value="Bearer s")],
+    )
+    http = bound.definition().http
+    assert http.http_method == HttpMethod.GET
+    assert [(h.name, h.value) for h in http.headers] == [("Authorization", "Bearer s")]
+
+
+def test_hosted_at_refuses_a_relative_url():
+    # The platform fetches the address itself, so a path alone is unreachable
+    # and would only surface as the model apologising to a caller.
+    with pytest.raises(ConfigurationError, match="not an http"):
+        _shelf().hosted_at("/tools/check_stock")
+
+
+async def test_a_bound_tool_still_runs():
+    bound = _shelf().hosted_at("https://demo.ngrok-free.app/tools/check_stock")
+    assert await bound.invoke(item="drill") == {"in_stock": 3}

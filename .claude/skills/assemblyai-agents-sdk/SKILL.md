@@ -64,11 +64,24 @@ and `tests/` asserts on whole calls. Its `AGENTS.md` says the same in place.
    Agent ids are disjoint across hosts and the same *names* exist on both, so
    persist the id and never look an agent up by name.
 
+   The examples are **not installed by pip** — that gives you the
+   `assemblyai_agents` package and nothing else. Every shape in the table above
+   does `from expose import public_address`, which lives in the repo, so clone
+   it and copy your chosen shape plus `expose.py` into the project:
+   ```bash
+   git clone https://github.com/dan-ince-aai/assemblyai-agents-python.git
+   cp assemblyai-agents-python/examples/{tools_only_agent.py,expose.py} my-agent/
+   ```
+   `examples/starter/` already ships its own `expose.py`, so copying that
+   directory is enough on its own.
+
 2. **Decide where each tool runs** before writing code (see the next section).
 
-3. **Write the declaration** in one module (e.g. `agent.py`): `@tool` functions
-   plus a module-level `agent = VoiceAgent(...)`. Nothing in it should touch the
-   network at import time, so it can be imported by tests and by the server.
+3. **Write the declaration** in one module (e.g. `agent.py`): `@tool` functions,
+   a module-level `TOOLS` list, and a `build(base_url)` that binds them with
+   `hosted_at` and returns the `VoiceAgent`. A module-level `VoiceAgent` only
+   works when the address is fixed. Nothing in the module should touch the
+   network at import time, so tests and the server can both import it.
 
 4. **Serve it** with `serving.serve(agent, reply=..., tool_secret=..., ...)`,
    which answers every route the platform will call straight off the
@@ -226,29 +239,15 @@ Always pass `http_method=HttpMethod.POST` (or `GET`) explicitly: `HttpMethod` is
 a plain `Enum`, and the field's default is the bare string `"POST"`, which
 serialises with a pydantic warning and compares unequal to the enum.
 
-A handy pattern is a `hosted(path)` helper that builds the config from
-`PUBLIC_BASE_URL`, so one declaration works against a tunnel, a staging host or
-a deployment without editing:
+A tunnel's address does not exist when the module is imported, and `@tool` runs
+at import, so `http=` in the decorator cannot carry one. Declare the tools bare
+and bind them in a `build(base_url)` function:
 
 ```python
-import os
 from assemblyai_agents import VoiceAgent, tool
-from assemblyai_agents.models.rest import HttpMethod, HttpToolHeaderInput, PlaintextHttpToolConfig
+from assemblyai_agents.models.rest import HttpToolHeaderInput
 
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
-TOOL_SECRET = os.environ.get("TOOL_SECRET", "change-me")
-
-def hosted(path: str) -> PlaintextHttpToolConfig | None:
-    """HTTP config pointing the platform at your backend, or None to run the tool in-process."""
-    if not PUBLIC_BASE_URL:
-        return None
-    return PlaintextHttpToolConfig(
-        url=f"{PUBLIC_BASE_URL}{path}",
-        http_method=HttpMethod.POST,
-        headers=[HttpToolHeaderInput(name="Authorization", value=f"Bearer {TOOL_SECRET}")],
-    )
-
-@tool(timeout_seconds=10, http=hosted("/tools/lookup_order"))
+@tool(timeout_seconds=10)
 async def lookup_order(order_id: str) -> dict:
     """Look up the status of a customer's order by its order number.
 
@@ -256,7 +255,26 @@ async def lookup_order(order_id: str) -> dict:
         order_id: The order number the caller read out, like W004.
     """
     ...
+
+TOOLS = [lookup_order, leave_message]
+
+def build(base_url: str) -> VoiceAgent:
+    auth = HttpToolHeaderInput(name="Authorization", value=f"Bearer {TOOL_SECRET}")
+    tools = [
+        declared.hosted_at(f"{base_url}/tools/{declared.name}", headers=[auth])
+        for declared in TOOLS
+    ]
+    return VoiceAgent(name="...", voice="ivy", system_prompt=..., tools=tools)
 ```
+
+`hosted_at` returns a **new** tool bound to that address and leaves the original
+alone, so `TOOLS` stays importable by tests and one run's tunnel cannot leak
+into a declaration built later in the same process. It defaults to `POST` and
+takes `http_method=` and `headers=`.
+
+Only when the address is fixed — a staging host, a deployment — can the
+declaration be a module-level `VoiceAgent` with `http=` passed to `@tool`
+directly. Under a tunnel it cannot, so write `build(base_url)` by default.
 
 ## Writing a tool that the SDK accepts
 
@@ -520,7 +538,7 @@ answer asked for, and again with the result.
 
 ## Deliverable checklist
 
-- `agent.py` with `@tool` functions and a module-level `VoiceAgent`, importable without side effects.
+- `agent.py` with `@tool` functions, a module-level `TOOLS` list and a `build(base_url)`, importable without side effects.
 - A backend (when any tool is hosted): `/tools/{name}` with auth, pre-connect route(s), webhook route with `verify()`; secrets and the public base URL from environment variables; a short run/expose note.
 - `deploy.py` that creates on first run and updates when an agent id is present.
 - Tests for the tools using `assemblyai_agents.testing`, plus one asserting on `agent.to_request()`.

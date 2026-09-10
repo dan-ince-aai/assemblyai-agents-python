@@ -32,6 +32,10 @@ Copy one, do not assemble from scratch. Each already handles the traps below.
 Start at the top and move down only for a stated reason. The first three are a
 single file each.
 
+`pip install` does not give you the examples. Clone the repo to copy one, and
+copy `expose.py` alongside it: every shape imports `public_address` from that
+file and it is not part of the package. `examples/starter/` ships its own copy.
+
 ## The shape of every one of them
 
 ```python
