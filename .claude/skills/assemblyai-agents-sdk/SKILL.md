@@ -152,8 +152,27 @@ lag for minutes on some networks) use `--tunnel ngrok`.
 
 | Tool declared… | Who runs it | Works on | Use when |
 | --- | --- | --- | --- |
-| with `http=PlaintextHttpToolConfig(url=..., http_method=..., headers=[...])` | the user's backend; platform POSTs/GETs the arguments | phone and WebSocket | production, anything that touches the user's data |
-| without `http=` (client-resident) | the process holding the WebSocket, via `AgentConnection(tools={name: fn})` | WebSocket only | local development, desktop/browser sessions needing local state |
+| with `http=PlaintextHttpToolConfig(url=..., http_method=..., headers=[...])` | whatever is at that address, which can be a script on the developer's own machine | phone, SIP and WebSocket | **almost always** |
+| without `http=` (client-resident) | the process holding the WebSocket, via `AgentConnection(tools={name: fn})` | WebSocket only | a desktop or browser session that needs local state, and nothing else |
+
+**Use `http=` unless there is a specific reason not to.** A phone or SIP call
+has no connected client, so a client-resident tool cannot be answered on one,
+and the SDK refuses to attach a number to an agent that still has one. Reaching
+for client-resident tools to avoid standing something up is a false economy:
+the agent then only works from a browser.
+
+Serving them does not mean writing a backend.
+`assemblyai_agents.serving.serve(agent, reply=decide, tool_secret=..., llm_key=...)`
+answers the platform from the declaration, on the standard library alone, so a
+whole agent is one script: see `examples/one_file_agent.py`, which declares its
+tools, decides what to say, deploys itself, gets an address and serves, in that
+order. `routes()` from the same module returns the identical handlers as plain
+callables for anyone who would rather host them in their own application.
+
+The public address comes from `PUBLIC_BASE_URL`, or from `examples/expose.py`,
+which starts ngrok or cloudflared. That helper is in the examples rather than
+the SDK because it is a workaround until agent code can be deployed directly;
+when that ships it is the only piece that changes.
 
 `PlaintextHttpToolConfig`, `HttpToolHeaderInput`, `HttpMethod`,
 `ResponseInstructions`, `DtmfCollectionProfile`, `ExecutionMode`,
@@ -168,10 +187,9 @@ Always pass `http_method=HttpMethod.POST` (or `GET`) explicitly: `HttpMethod` is
 a plain `Enum`, and the field's default is the bare string `"POST"`, which
 serialises with a pydantic warning and compares unequal to the enum.
 
-Default to `http=` tools for anything the user would ship. A handy pattern is a
-`hosted(path)` helper that returns the HTTP config when `PUBLIC_BASE_URL` is set
-and `None` otherwise, so the same declaration runs client-resident on a laptop
-and hosted in production, and `e2e_check.py` can point it at a tunnel:
+A handy pattern is a `hosted(path)` helper that builds the config from
+`PUBLIC_BASE_URL`, so one declaration works against a tunnel, a staging host or
+a deployment without editing:
 
 ```python
 import os
