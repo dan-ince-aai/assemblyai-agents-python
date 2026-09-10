@@ -156,7 +156,7 @@ client = Client(base_url="https://agents.us.assemblyai.com")
 
 The `examples/` directory contains the complete, runnable version of this
 walkthrough: `pizza_line.py` (the declaration), `server.py` (your backend),
-`deploy.py`, `talk.py` and `phone.py`.
+`deploy.py`, `talk.py`, `phone.py` and `e2e_check.py`.
 
 ### 1. Declare the agent
 
@@ -275,6 +275,48 @@ async def main():
 
 asyncio.run(main())
 ```
+
+### 5. Prove the platform can reach your backend, from your laptop
+
+You do not need a phone number or a microphone to check the whole loop. With
+[ngrok](https://ngrok.com) or [cloudflared](https://github.com/cloudflare/cloudflared)
+on your `PATH`, `examples/e2e_check.py` opens a tunnel to a local port, imports
+your declaration with `PUBLIC_BASE_URL` set to the tunnel, deploys a throwaway
+copy of the agent, opens a session, asks the question you give it, and records
+every request the platform makes to your tool endpoints:
+
+```bash
+python examples/e2e_check.py --module pizza_line --path examples \
+    --utterance "Hi, what's the status of order W004?" --tool lookup_order
+```
+
+```text
+1. opening tunnel
+   https://acaa-....ngrok-free.app  ->  http://127.0.0.1:8788
+2. importing the declaration with PUBLIC_BASE_URL set
+   POST   https://acaa-....ngrok-free.app/tools/lookup_order  ->  lookup_order()
+   POST   https://acaa-....ngrok-free.app/tools/cancel_order  ->  cancel_order()
+3. serving tools on :8788 by calling Tool.invoke
+4. deploying a throwaway copy of the agent
+5. talking to it
+   attempt 1: agent said: Your order W zero zero four has shipped and is expected on Thursday.
+
+requests the platform made through the tunnel:
+  POST /tools/lookup_order  tool=lookup_order  status=200  3 ms
+      arguments: {"order_id": "W004"}
+      headers:   {"authorization": "Bearer ***", "content-type": "application/json", ...}
+
+PASS: the platform called lookup_order on your backend through the tunnel.
+deleted agent_...
+```
+
+By default the script serves the tools itself by calling `Tool.invoke`, which
+checks the declaration and the platform contract. Add
+`--forward http://127.0.0.1:8000` to proxy the platform's requests to your own
+running backend instead, so `server.py` is what answers. The only requirement is
+that the declaration builds its tool URLs from `PUBLIC_BASE_URL`, as
+`pizza_line.py` does. The throwaway agent is deleted and the tunnel closed when
+the script exits.
 
 ## Declaring tools
 

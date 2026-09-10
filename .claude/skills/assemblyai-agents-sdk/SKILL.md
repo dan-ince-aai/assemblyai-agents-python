@@ -54,12 +54,46 @@ this file covers the workflow and the decisions.
      (`create_tool_context`, `get_tool`); tools are plain callables.
    - `client.agents.get(agent_id)` – confirm tools and pre-connect came back
      with the right URLs (header values are never echoed; that is expected).
-   - A real call: `examples/talk.py`-style `AgentConnection` from a terminal
-     (needs the `[audio]` extra and PortAudio), or a phone number.
+   - **End to end through a tunnel, no mic or phone needed**: run the bundled
+     `scripts/e2e_check.py` (see below). It is the fastest way to prove the
+     platform actually reaches the backend, and its recorded requests show the
+     exact body/headers the platform sends.
+   - A real call: `AgentConnection` from a terminal (needs the `[audio]` extra
+     and PortAudio), or a phone number.
 
 7. **Attach a phone number** only after every tool has `http=`: the SDK refuses
    `assign_agent(..., agent=agent)` for a declaration with client-resident
    tools, because a phone call has no connected client to run them.
+
+## Proving it works: `scripts/e2e_check.py`
+
+The script in this skill's `scripts/` folder needs `ngrok` (configured with an
+auth token) or `cloudflared` on `PATH`, plus `ASSEMBLYAI_API_KEY`. It opens a
+tunnel to a local port, imports the declaration with `PUBLIC_BASE_URL` set to
+the tunnel URL, deploys a throwaway copy of the agent, opens a WebSocket session
+with no device audio, injects an utterance as a text turn, and records every
+request the platform makes to the tool paths. Exit code 0 means the platform
+called the tool through the tunnel. The throwaway agent is deleted afterwards.
+
+```bash
+python <skill-dir>/scripts/e2e_check.py --module agent --path . \
+    --utterance "I'd like to book a cleaning next Tuesday morning" --tool check_availability
+# add --forward http://127.0.0.1:8000 to route the platform's calls to the user's running server
+```
+
+Requirements it imposes on the declaration, so design for them from the start:
+- the module exposes `agent = VoiceAgent(...)` (or pass `--attr`) and has no
+  network side effects at import;
+- tool URLs are built from `os.environ["PUBLIC_BASE_URL"]` (a `hosted(path)`
+  helper), so pointing them at a tunnel is a matter of setting one variable;
+- the utterance clearly needs the named tool; the model does not always act on
+  a text turn, so the script retries with a fresh session (`--attempts`, default 3).
+
+Pre-connect is telephony-only and is not exercised by this check. ngrok's free
+tier serves an interstitial to browsers; the script sends the
+`ngrok-skip-browser-warning` header on its own probes and the platform is
+unaffected. If `cloudflared` never becomes reachable (its quick-tunnel DNS can
+lag for minutes on some networks) use `--tunnel ngrok`.
 
 ## Where a tool runs
 
@@ -153,3 +187,4 @@ when a lookup fails. `VoiceAgent` dedents the prompt, so indent freely.
 - `deploy.py` that creates on first run and updates when an agent id is present.
 - Tests for the tools using `assemblyai_agents.testing`, plus one asserting on `agent.to_request()`.
 - A README snippet for the user: install line, env vars, how to deploy, how to try it.
+- One `e2e_check.py` run that ends in `PASS`, with its recorded request pasted into the report.
