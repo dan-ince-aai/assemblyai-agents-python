@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "assemblyai-agents"
+dynamic = ["version"]
+description = "Python client for the AssemblyAI Voice Agents API."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "AssemblyAI", email = "support@assemblyai.com" }]
+keywords = ["assemblyai", "voice agent", "speech", "realtime", "websocket", "telephony"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = ["httpx>=0.28,<1", "pydantic>=2,<3", "websockets>=13,<16"]
+
+[project.optional-dependencies]
+# Microphone capture and speaker playback (`microphone_stream`, `PlaybackSink`,
+# `AgentConnection(audio=True)`). Needs the PortAudio system library first:
+#   macOS: brew install portaudio     Debian/Ubuntu: apt install portaudio19-dev
+audio = ["pyaudio==0.2.14"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[project.urls]
+Homepage = "https://www.assemblyai.com"
+Documentation = "https://www.assemblyai.com/docs"
+Repository = "https://github.com/dan-ince-aai/assemblyai-agents-python"
+
+[tool.hatch.version]
+path = "assemblyai_agents/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["assemblyai_agents"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "assemblyai_agents",
+  "tests",
+  "examples",
+  "README.md",
+  "LICENSE",
+  "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
