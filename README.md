@@ -624,7 +624,9 @@ agent = VoiceAgent(
 
 ## Bring your own LLM
 
-Any OpenAI-compatible chat-completions endpoint can drive the conversation. The
+Response generation can move to your backend too. Point the agent at any
+OpenAI-compatible chat-completions endpoint and the platform asks *it* what to
+say on every turn, while still handling speech, turn-taking and telephony. The
 key is write-only and never returned.
 
 ```python
@@ -633,12 +635,66 @@ from assemblyai_agents.models.rest import LlmConfigRequest
 agent = VoiceAgent(
     ...,
     llm=LlmConfigRequest(
-        base_url="https://api.openai.com/v1",
-        model="gpt-4o-mini",
-        api_key="sk-...",
+        base_url="https://api.example.com/v1",   # or https://api.openai.com/v1
+        model="pizza-line-rules",                # whatever your endpoint expects
+        api_key="...",                           # sent as Authorization: Bearer
     ),
 )
 ```
+
+`examples/byo_llm_server.py` is a working endpoint: it is `server.py` plus a
+`POST /v1/chat/completions` route, so one service owns the tools *and* the
+replies. Its "model" is a few lines of Python that read the transcript and
+decide, which is the point: the platform cannot tell what is behind the schema,
+so a decision tree, an open-weights model you host, or a retrieval pipeline all
+work the same way.
+
+```bash
+# one service: LLM + tools + webhooks
+TOOL_SECRET=... LLM_API_KEY=... uvicorn byo_llm_server:app --port 8000
+
+# deploy with the LLM wired to it, then prove the whole loop through a tunnel
+BYO_LLM=1 TOOL_SECRET=... LLM_API_KEY=... python examples/e2e_check.py \
+    --module pizza_line --path examples --forward http://127.0.0.1:8000 \
+    --utterance "Hi, what's the status of order W004?" --tool lookup_order
+```
+
+```text
+  attempt 1: agent said: Pizza Palace, how can I help?
+  attempt 1: handing the utterance to the model
+  attempt 1: agent said: Order W 0 0 4 is shipped, expected Thursday.
+  POST /v1/chat/completions  not a tool path  status=200  32 ms
+  POST /tools/lookup_order   tool=lookup_order  status=200  29 ms
+  POST /v1/chat/completions  not a tool path  status=200  34 ms
+PASS
+```
+
+### What the platform sends your endpoint
+
+Captured from a live session, so build against this rather than the OpenAI docs
+alone:
+
+- `POST {base_url}/chat/completions`, `Authorization: Bearer <your api_key>`,
+  `User-Agent: LiveKit Agents/...`, and a 10 second read timeout, so get the
+  first chunk out fast and do slow work in a tool.
+- `stream: true` on every call, with `stream_options: {"include_usage": true}`.
+  Server-Sent Events are required; a plain JSON body will not do.
+- `messages[0]` is your `system_prompt` **with the platform's own spoken-output
+  guidance appended** (no formatting characters, how to say identifiers, dates
+  and emails aloud, when to prefer a tool over asking). The greeting arrives as
+  an `assistant` message.
+- `tools` carries the agent's tools in OpenAI function form with
+  `tool_choice: "auto"`, except the platform nests a second `type: "function"`
+  plus its own `timeout_seconds` and `execution_mode` inside `function`. Read
+  the name from `tool["function"]["name"]`.
+- Emit `tool_calls` and the platform runs the tool, then calls you again with a
+  `tool` message carrying the result and its `tool_call_id`, followed by a
+  `system` note such as "The function call … has just completed". So the tool
+  message is usually **not** the last one: treat "a tool result with no
+  assistant text after it" as the cue to answer, and read a repeated call's
+  answer back out of the transcript instead of asking for it again. A failed
+  call comes back with coaching text appended, and after three consecutive
+  failures the platform tells you to stop retrying.
 
 ## Sessions, recordings and transcripts
 

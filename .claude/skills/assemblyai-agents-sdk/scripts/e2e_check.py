@@ -24,9 +24,16 @@ What it does, in order:
    the model through ``reply.create`` instructions. (A ``conversation.message``
    is not reliably seen by the model, and a reply requested while the greeting
    is still playing replaces the greeting, so neither is used.)
-5. Waits for the platform to call a tool endpoint through the tunnel, prints the
-   recorded requests (method, path, arguments, headers with secrets masked), and
-   exits 0 on success. The throwaway agent is deleted and the tunnel closed.
+5. Waits for the platform to call a tool endpoint through the tunnel, lingers a
+   few seconds so the follow-up requests land too, prints the recorded requests
+   (method, path, arguments, headers with secrets masked), and exits 0 on
+   success. The throwaway agent is deleted and the tunnel closed.
+
+Requests to any other path are recorded as well, so this also shows a bring
+your own LLM endpoint being called: with ``byo_llm_server.py`` running behind
+``--forward``, the report contains the platform's ``POST /v1/chat/completions``,
+the tool call your endpoint asked for, and the second completion carrying the
+tool result.
 
 The injected turn is a test convenience; the check retries with a fresh session
 (``--attempts``) to absorb model variance. Export any other variable your
@@ -229,7 +236,7 @@ def make_handler(tools_by_path: dict, forward_base: str | None, recorder: Record
 # --------------------------------------------------------------------------- conversation
 
 
-async def converse(agent_id: str, utterance: str, recorder: Recorder, wait_seconds: float, attempt: int) -> bool:
+async def converse(agent_id: str, utterance: str, recorder: Recorder, wait_seconds: float, linger: float, attempt: int) -> bool:
     from assemblyai_agents import AgentConnection
 
     loop = asyncio.get_running_loop()
@@ -261,6 +268,8 @@ async def converse(agent_id: str, utterance: str, recorder: Recorder, wait_secon
         print(f"  attempt {attempt}: session {event.session_id} ready; waiting for the greeting")
         background.append(asyncio.create_task(_inject()))
 
+    replied = asyncio.Event()
+
     @conn.on_agent_transcript
     def _agent(text):
         nonlocal transcripts
@@ -268,6 +277,8 @@ async def converse(agent_id: str, utterance: str, recorder: Recorder, wait_secon
         print(f"  attempt {attempt}: agent said: {text}")
         if transcripts == 1:
             greeting_done.set()
+        else:
+            replied.set()
 
     @conn.on_error
     def _error(event):
@@ -280,6 +291,14 @@ async def converse(agent_id: str, utterance: str, recorder: Recorder, wait_secon
             await asyncio.wait_for(reached.wait(), timeout=wait_seconds)
         except asyncio.TimeoutError:
             print(f"  attempt {attempt}: no tool call reached the tunnel within {wait_seconds:.0f}s")
+        else:
+            # Stay on the line briefly: the turn that follows a tool call is
+            # where the result is spoken, and where a BYO LLM endpoint is asked
+            # for the wording.
+            try:
+                await asyncio.wait_for(replied.wait(), timeout=linger)
+            except asyncio.TimeoutError:
+                pass
         for task in background:
             task.cancel()
         await conn.aclose()
@@ -309,6 +328,7 @@ def main() -> int:
     parser.add_argument("--forward", metavar="URL", help="proxy requests to your own running backend, e.g. http://127.0.0.1:8000, instead of serving the tools here")
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument("--wait", type=float, default=45, help="seconds to wait per attempt (greeting included) for the platform's tool call")
+    parser.add_argument("--linger", type=float, default=8, help="seconds to stay connected after the tool call, to capture the reply turn")
     parser.add_argument("--reach-timeout", type=int, default=120, help="seconds to wait for the tunnel to answer")
     args = parser.parse_args()
 
@@ -361,7 +381,7 @@ def main() -> int:
         print("5. talking to it")
         success = False
         for attempt in range(1, args.attempts + 1):
-            asyncio.run(converse(created.id, args.utterance, recorder, args.wait, attempt))
+            asyncio.run(converse(created.id, args.utterance, recorder, args.wait, args.linger, attempt))
             time.sleep(1)
             hits = [r for r in recorder.requests if r.path in tools_by_path and (args.tool is None or tools_by_path[r.path].name == args.tool)]
             if hits:
@@ -372,9 +392,10 @@ def main() -> int:
         if not recorder.requests:
             print("  (none)")
         for r in recorder.requests:
-            name = tools_by_path[r.path].name if r.path in tools_by_path else "?"
-            print(f"  {r.method} {r.path}  tool={name}  status={r.status}  {r.elapsed_ms:.0f} ms")
-            print(f"      arguments: {json.dumps(r.arguments)}")
+            label = f"tool={tools_by_path[r.path].name}" if r.path in tools_by_path else "not a tool path"
+            print(f"  {r.method} {r.path}  {label}  status={r.status}  {r.elapsed_ms:.0f} ms")
+            rendered = json.dumps(r.arguments)
+            print(f"      arguments: {rendered if len(rendered) <= 600 else rendered[:600] + '…'}")
             print(f"      headers:   {json.dumps({k: v for k, v in r.headers.items() if k.lower() in ('authorization', 'content-type', 'user-agent')})}")
         print()
         if success:

@@ -19,6 +19,7 @@ from assemblyai_agents import Captured, PreConnectRequest, VoiceAgent, tool
 from assemblyai_agents.models.rest import (
     HttpMethod,
     HttpToolHeaderInput,
+    LlmConfigRequest,
     PlaintextHttpToolConfig,
 )
 
@@ -51,7 +52,12 @@ async def lookup_order(order_id: str) -> dict:
     Args:
         order_id: The order number the caller read out, like W004.
     """
-    return ORDERS.get(order_id.upper(), {"error": f"no order {order_id}"})
+    order = ORDERS.get(order_id.upper())
+    if order is None:
+        return {"error": f"no order {order_id}"}
+    # Echoing the id back matters: whatever generates the reply reads the result
+    # and nothing else, so a result that omits the id cannot name it out loud.
+    return {"order_id": order_id.upper(), **order}
 
 
 @tool(timeout_seconds=10, http=hosted("/tools/cancel_order"))
@@ -71,6 +77,26 @@ async def cancel_order(order_id: str, reason: str = "customer request") -> dict:
     return {"cancelled": True, "order_id": order_id.upper(), "reason": reason}
 
 
+def byo_llm() -> LlmConfigRequest | None:
+    """Point response generation at your own OpenAI-compatible endpoint, or None.
+
+    `BYO_LLM=1` uses `byo_llm_server.py` on this same backend, which is what
+    `e2e_check.py` exercises; `LLM_BASE_URL` points somewhere else entirely (a
+    hosted model, a gateway, your own service). Unset both and the platform's
+    default model runs the conversation.
+    """
+    base_url = os.environ.get("LLM_BASE_URL", "").rstrip("/")
+    if not base_url and os.environ.get("BYO_LLM") and PUBLIC_BASE_URL:
+        base_url = f"{PUBLIC_BASE_URL}/v1"
+    if not base_url:
+        return None
+    return LlmConfigRequest(
+        base_url=base_url,
+        model=os.environ.get("LLM_MODEL", "pizza-line-rules"),
+        api_key=os.environ.get("LLM_API_KEY", "change-me"),
+    )
+
+
 agent = VoiceAgent(
     name="Pizza Line",
     voice="ivy",
@@ -84,6 +110,9 @@ agent = VoiceAgent(
     """,
     greeting="Pizza Palace, how can I help?",
     tools=[lookup_order, cancel_order],
+    # None unless BYO_LLM / LLM_BASE_URL is set, in which case your endpoint
+    # generates every reply instead of the platform's default model.
+    llm=byo_llm(),
     # Looks the caller up before a phone call is answered (telephony only; a
     # WebSocket session skips it). Fails open: if the endpoint is slow or down,
     # the call proceeds without the values.

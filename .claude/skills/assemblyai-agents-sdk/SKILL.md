@@ -228,6 +228,43 @@ when a lookup fails. `VoiceAgent` dedents the prompt, so indent freely.
   `session.started`, `session.completed`, `call.connected`, `call.ended`,
   `call.failed`.
 
+## Bring your own LLM
+
+`llm=LlmConfigRequest(base_url, model, api_key)` moves response generation to
+any OpenAI-compatible chat-completions endpoint, so the user's backend can own
+the words as well as the tools. Reach for it when they ask to use their own
+model, an open-weights model they host, a gateway, or deterministic logic
+instead of a model. The platform still owns speech, turn-taking and telephony.
+`base_url` must be HTTPS and is DNS-checked at create/update like tool URLs;
+`api_key` is write-only.
+
+The contract, captured from a live session (build against this, not the OpenAI
+docs alone):
+
+- `POST {base_url}/chat/completions` with `Authorization: Bearer <api_key>`, and
+  a 10 second read timeout — get the first chunk out fast, do slow work in tools.
+- `stream: true` on every call with `stream_options: {"include_usage": true}`,
+  so the endpoint **must** answer with Server-Sent Events in OpenAI's
+  `chat.completion.chunk` shape. A plain JSON body will not do.
+- `messages[0]` is the agent's `system_prompt` plus the platform's own
+  spoken-output guidance; the greeting arrives as an `assistant` message.
+- `tools` is OpenAI function form with `tool_choice: "auto"`, but with a second
+  `type: "function"` and the platform's `timeout_seconds`/`execution_mode`
+  nested inside `function` — read the name from `tool["function"]["name"]`.
+- Emitting `tool_calls` makes the platform run that tool and call the endpoint
+  again with a `tool` message (plus `tool_call_id`), then a `system` note like
+  "The function call … has just completed". The tool message is therefore
+  usually not the last one: the cue to speak is **a tool result with no
+  assistant text after it**. Answer a repeated call from the transcript rather
+  than re-issuing it, or the caller waits through the same round trip twice;
+  three consecutive failures and the platform tells you to stop.
+
+A working endpoint, tools and replies in one service, is `byo_llm_server.py` in
+the SDK repo's `examples/`. `scripts/e2e_check.py` exercises it: with the
+backend behind `--forward`, the report shows the platform's
+`POST /v1/chat/completions`, the tool call the endpoint asked for, and the
+second completion carrying the result.
+
 ## Telephony
 
 - Managed number: `client.phone_numbers.purchase_available(PurchaseAvailablePhoneNumberRequest(country_code="US", number_type=NumberType.local, area_code=415, agent_id=...))`. Billable: confirm with the user before running it.

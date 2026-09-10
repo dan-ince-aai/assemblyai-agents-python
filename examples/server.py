@@ -33,6 +33,12 @@ TOOLS = {declared.name: declared for declared in agent.tools or []}
 app = FastAPI(title="Pizza Line backend")
 
 
+@app.get("/healthz")
+def healthz():
+    """Unauthenticated liveness check, for your own monitoring."""
+    return {"ok": True, "tools": sorted(TOOLS)}
+
+
 def _authorize(request: Request) -> None:
     # The header value configured on the tool (see pizza_line.hosted) arrives on
     # every call; refuse anything that does not carry it.
