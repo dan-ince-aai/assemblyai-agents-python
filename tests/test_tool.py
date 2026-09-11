@@ -430,3 +430,60 @@ def test_hosted_at_refuses_a_relative_url():
 async def test_a_bound_tool_still_runs():
     bound = _shelf().hosted_at("https://demo.ngrok-free.app/tools/check_stock")
     assert await bound.invoke(item="drill") == {"in_stock": 3}
+
+
+# --------------------------------------------------------------------------- hosted here, or served elsewhere
+
+
+def test_a_bare_tool_is_hosted_by_this_process():
+    assert _shelf().hosted is True
+    assert _shelf().spec.http is None
+
+
+def test_url_points_the_platform_at_a_service_you_already_run():
+    @tool(url="https://api.example.com/weather")
+    def weather(city: str) -> dict:
+        """Weather for a city."""
+        return {}
+
+    assert weather.hosted is False
+    assert weather.spec.http.url == "https://api.example.com/weather"
+    assert weather.spec.http.http_method == HttpMethod.POST
+
+
+def test_url_takes_a_method_and_headers():
+    @tool(url="https://api.example.com/weather", http_method=HttpMethod.GET,
+          headers=[HttpToolHeaderInput(name="X-Key", value="k")])
+    def weather(city: str) -> dict:
+        """Weather for a city."""
+        return {}
+
+    assert weather.spec.http.http_method == HttpMethod.GET
+    assert weather.spec.http.headers[0].name == "X-Key"
+
+
+def test_a_url_that_is_not_http_is_refused():
+    with pytest.raises(ConfigurationError, match="not an http\\(s\\) URL"):
+        @tool(url="/tools/weather")
+        def weather(city: str) -> dict:
+            """Weather for a city."""
+            return {}
+
+
+def test_method_or_headers_without_a_url_is_refused():
+    with pytest.raises(ConfigurationError, match="only make sense with url="):
+        @tool(http_method=HttpMethod.GET)
+        def weather(city: str) -> dict:
+            """Weather for a city."""
+            return {}
+
+
+def test_http_is_the_deprecated_spelling_of_url():
+    with pytest.warns(DeprecationWarning, match="http=.*deprecated"):
+        @tool(http=PlaintextHttpToolConfig(url="https://api.example.com/weather", http_method=HttpMethod.POST))
+        def weather(city: str) -> dict:
+            """Weather for a city."""
+            return {}
+
+    assert weather.hosted is False
+    assert weather.spec.http.url == "https://api.example.com/weather"

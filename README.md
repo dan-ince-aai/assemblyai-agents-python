@@ -1,221 +1,168 @@
 # assemblyai-agents
 
 Backend SDK for the [AssemblyAI Voice Agents API](https://www.assemblyai.com/docs),
-in Python. Declare an agent and its tools in code, deploy it with one call, serve
-the tool and pre-connect logic from your own backend, receive webhooks, and put
-the agent on a phone number.
+in Python. Declare an agent and its tools as ordinary functions, decide what it
+says if you want to, and deploy and serve it with one call. The platform owns
+the call — speech to text, text to speech, turn-taking, telephony — and reaches
+your code over HTTPS.
 
 ```python
-from assemblyai_agents import Client, VoiceAgent, tool
-from assemblyai_agents.models.rest import HttpMethod, PlaintextHttpToolConfig
+from assemblyai_agents import VoiceAgent, tool
+from assemblyai_agents.replies import Turn, call_tool, say
 
-@tool(
-    timeout_seconds=10,
-    http=PlaintextHttpToolConfig(url="https://api.example.com/tools/lookup_order", http_method=HttpMethod.POST),
-)
-async def lookup_order(order_id: str) -> dict:
-    """Look up the status of a customer's order by its order number.
+@tool(timeout_seconds=10)
+async def lookup_order(order_said: str) -> dict:
+    """Look up an order by the number the caller read out.
 
     Args:
-        order_id: The order number the caller read out, like W004.
+        order_said: The order number exactly as the caller said it.
     """
-    return await orders.status(order_id)   # your code; served by your backend
+    return await orders.status(order_said)            # your database, your API, anything
+
+def decide(turn: Turn):
+    if turn.pending and turn.pending.name == "lookup_order":
+        return say(f"That order is {turn.pending.get('status')}. Anything else?")
+    if not turn.caller_said:
+        return say("Could you read me your order number?")
+    return call_tool("lookup_order", order_said=turn.caller_said)
 
 agent = VoiceAgent(
     name="Pizza Line",
-    voice="ivy",
-    system_prompt="You answer order-status questions for Pizza Palace. Keep it short.",
+    voice="alba",
+    system_prompt="You answer order-status questions for Pizza Palace.",
     greeting="Pizza Palace, how can I help?",
-    tools=[lookup_order],
+    tools=[lookup_order],          # served by this process at /tools/lookup_order
+    reply=decide,                  # this process decides every reply; omit it and the platform's model talks
 )
 
-deployed = Client().agents.create(agent)
-print(deployed.id)  # agent_...
+agent.serve()                      # PUBLIC_BASE_URL → deploy → serve
 ```
 
-What is in the box:
+Point a phone number at the agent id it prints and a real caller reaches the
+function above.
 
-- **`VoiceAgent` + `@tool`** – declare an agent and its tools as ordinary
-  Python. Parameter schemas are derived from type hints and docstrings, and
-  every rule the server would reject is checked before the request leaves.
+## The two decisions
+
+An agent has exactly two modes, and one field picks between them:
+
+| | What talks | You write |
+| --- | --- | --- |
+| **Tools only** | the platform's model, shaped by `system_prompt` | `@tool` functions |
+| **Your own replies** | your code, on every turn | `@tool` functions and a `reply=` function |
+
+Everything else — where the tools are served, what the reply endpoint is called,
+which secret the platform presents — is derived from one address, so you never
+type a URL into the declaration.
+
+## What is in the box
+
+- **`VoiceAgent` + `@tool`** – declare an agent and its tools. Schemas come from
+  type hints and docstrings, and every rule the server would reject is checked
+  before the request leaves.
+- **`agent.serve()` / `agent.deploy()`** – bind the declaration to your address,
+  create or update the stored agent, and answer the platform's requests on the
+  standard library alone. **`serving.asgi(agent)`** is the same thing as an ASGI
+  app for hosts that want one (Modal, uvicorn, Lambda through Mangum).
+- **`replies`** – read the platform's reply request and answer it: `Turn`,
+  `say()`, `call_tool()`, `stream()`. The wire contract is handled; you write
+  the decision.
 - **REST client** (sync and async) for agents, sessions, calls, phone numbers,
-  short-lived tokens, webhook subscriptions and the built-in tool catalog, with
-  retries, idempotency keys and a typed exception hierarchy.
-- **Backend contracts** for the HTTP tools and pre-connect requests the platform
-  calls on your service, plus **webhook signature verification**.
-- **Telephony helpers** (`HumanTransfer`, `PreConnectRequest`, keypad input).
-- **Realtime WebSocket client** (`AgentConnection`, `AsyncRealtimeSession`) for
-  talking to a deployed agent from a terminal, testing, or building your own
-  audio transport.
-- An offline **`testing`** module for unit-testing your tools.
+  tokens, webhook subscriptions and the built-in tool catalog, with retries,
+  idempotency keys and a typed exception hierarchy.
+- **Telephony**: `PreConnectRequest` (look the caller up before answering, with
+  a `handler=` this process serves), `HumanTransfer`, keypad input, outbound
+  calls.
+- **Webhook verification**, an **`AgentConnection`** test client for talking to
+  an agent from a terminal, and an offline **`testing`** module.
 
 ## How it fits together
 
 ```
- caller ──phone / WebSocket──▶  AssemblyAI Voice Agents platform  ──HTTPS──▶  your backend
-                                 speech-to-text, LLM, text-to-speech           tool endpoints
-                                 turn-taking, transfers, recordings            pre-connect lookups
-                                        │                                      webhook receiver
-                                        └── REST API ◀── this SDK ── deploy agents, numbers, webhooks
+ caller ──phone / WebSocket──▶  AssemblyAI platform  ──HTTPS──▶  your process
+                                speech to text, model,           /tools/{name}
+                                text to speech, turn-taking      /v1/chat/completions   (reply=)
+                                       │                         /pre-connect/{name}
+                                       └── REST API ◀── agent.deploy()
 ```
 
-You own the agent's definition and its business logic; the platform owns the
-call. When the model decides to use a tool, the platform POSTs the arguments to
-the URL you configured on that tool and speaks the result. Before a phone
-call is answered it can hit your pre-connect endpoint to personalise the
-conversation,
-and when a session or call ends it delivers a signed webhook. Pre-connect,
-transfers and keypad input apply to phone calls; tools and webhooks apply to
-every session.
+The platform never sees your code. It sees a declaration — a prompt, a voice, a
+list of tools with URLs, maybe a reply endpoint — and calls those URLs while a
+conversation runs. `serve()` answers them from the functions on the declaration.
 
 ## Requirements
 
 - Python 3.11 or newer
-- An AssemblyAI API key
-- Only for microphone/speaker audio from a terminal: the PortAudio system
-  library (`brew install portaudio` on macOS, `apt install portaudio19-dev` on
-  Debian/Ubuntu)
+- An AssemblyAI API key in `ASSEMBLYAI_API_KEY`
+- A public HTTPS address that reaches your process (see [Hosting](#hosting))
+- Only for talking to an agent from a terminal: the PortAudio system library
+  (`brew install portaudio` / `apt install portaudio19-dev`) and the `[audio]`
+  extra
 
 ## Installation
 
-The package is distributed from this Git repository rather than PyPI. `pip`
-(and `uv`) install straight from the repository URL:
+Distributed from this repository; pin a tag for reproducible builds:
 
 ```bash
-pip install "git+https://github.com/dan-ince-aai/assemblyai-agents-python.git"
+pip install "git+https://github.com/dan-ince-aai/assemblyai-agents-python.git@v0.2.0"
+uv add "assemblyai-agents @ git+https://github.com/dan-ince-aai/assemblyai-agents-python.git@v0.2.0"
+pip install "assemblyai-agents[audio] @ git+https://github.com/dan-ince-aai/assemblyai-agents-python.git@v0.2.0"
 ```
-
-Pin to a release tag or commit so your builds are reproducible:
-
-```bash
-pip install "git+https://github.com/dan-ince-aai/assemblyai-agents-python.git@v0.1.0"
-```
-
-In a `requirements.txt`:
-
-```text
-assemblyai-agents @ git+https://github.com/dan-ince-aai/assemblyai-agents-python.git@v0.1.0
-```
-
-In a `pyproject.toml`:
-
-```toml
-dependencies = [
-  "assemblyai-agents @ git+https://github.com/dan-ince-aai/assemblyai-agents-python.git@v0.1.0",
-]
-```
-
-With `uv`:
-
-```bash
-uv add "assemblyai-agents @ git+https://github.com/dan-ince-aai/assemblyai-agents-python.git"
-```
-
-With microphone and speaker support for the terminal client:
-
-```bash
-pip install "assemblyai-agents[audio] @ git+https://github.com/dan-ince-aai/assemblyai-agents-python.git"
-```
-
-If you were given access to a **private** copy of this repository, install over
-SSH with a GitHub account that has been granted access:
-
-```bash
-pip install "git+ssh://git@github.com/dan-ince-aai/assemblyai-agents-python.git"
-```
-
-Check the install:
 
 ```bash
 python -c "import assemblyai_agents; print(assemblyai_agents.__version__)"
 ```
 
-## Authentication and regions
+## Hosting
 
-Set `ASSEMBLYAI_API_KEY` in the environment and the client picks it up, or pass
-it explicitly:
+The platform has to reach your process over public HTTPS, and it resolves every
+URL in DNS when the agent is created — so an address has to exist before you
+deploy. Nothing in the SDK starts a tunnel: the address is yours, from wherever
+you run.
+
+| Where | Address | Run |
+| --- | --- | --- |
+| Railway, Render, Fly, Cloud Run, a VM | the host's URL, in `PUBLIC_BASE_URL` | `agent.serve()` (reads `PORT`) |
+| Modal, Lambda, anything ASGI | the deployed function's URL | `serving.asgi(agent)` |
+| Your laptop | a tunnel (ngrok, cloudflared) | `agent.serve(public_url=tunnel_url)` |
+
+```bash
+export PUBLIC_BASE_URL=https://agent.example.com   # or: RENDER_EXTERNAL_URL, https://$RAILWAY_PUBLIC_DOMAIN
+export ASSEMBLYAI_API_KEY=...
+export AGENT_SECRET=...                            # optional; minted per run if unset
+python agent.py
+```
+
+```python
+# Modal
+@app.function(image=image, secrets=[modal.Secret.from_name("assemblyai")])
+@modal.asgi_app()
+def web():
+    return serving.asgi(agent, secret=os.environ["AGENT_SECRET"])
+```
+
+The [examples repository](https://github.com/dan-ince-aai/assemblyai-agents-examples)
+has a runnable file per host, including the ngrok helper for development.
+
+## Authentication and regions
 
 ```python
 from assemblyai_agents import Client, AsyncClient
 
-client = Client()                          # reads ASSEMBLYAI_API_KEY
-client = Client(api_key="...")             # or pass it
-aclient = AsyncClient(timeout=60, max_retries=5)
-```
-
-The default base URL is `https://agents.assemblyai.com`. A US-hosted deployment
-is available at `https://agents.us.assemblyai.com`. Agents, phone numbers and
-sessions are stored per host, so keep an agent and everything attached to it on
-one of them:
-
-```python
+client = Client()                                        # reads ASSEMBLYAI_API_KEY
 client = Client(base_url="https://agents.us.assemblyai.com")
 ```
 
-## Quickstart
-
-Runnable agents, a starter project and a Claude Code skill are in a separate
-repository, because they are files you clone and edit while this is a package
-you install:
-
-**https://github.com/dan-ince-aai/assemblyai-agents-examples**
-
-The shape they all share: an agent is a script that serves your own functions,
-plus a declaration pointing the platform at it. There is no service to write.
-
-```python
-from assemblyai_agents import Client, VoiceAgent, tool
-from assemblyai_agents.models.rest import HttpToolHeaderInput
-from assemblyai_agents.serving import claim_port, serve
-
-@tool(timeout_seconds=10)
-async def lookup_order(order_id: str) -> dict:
-    """Look up the status of a customer's order by its order number.
-
-    Args:
-        order_id: The order number the caller read out, like W004.
-    """
-    return await orders.status(order_id)      # your database, your API, anything
-
-TOOLS = [lookup_order]
-
-def build(base_url: str) -> VoiceAgent:
-    auth = HttpToolHeaderInput(name="Authorization", value=f"Bearer {SECRET}")
-    return VoiceAgent(
-        name="Pizza Line",
-        voice="ivy",
-        system_prompt="You answer order-status questions for Pizza Palace.",
-        greeting="Pizza Palace, how can I help?",
-        tools=[t.hosted_at(f"{base_url}/tools/{t.name}", headers=[auth]) for t in TOOLS],
-    )
-
-claim_port(port=8000)                         # before the deploy, not after
-agent = build(PUBLIC_BASE_URL)                # a public HTTPS address
-agent_id = Client().agents.create(agent).id   # persist this and reuse it
-serve(agent, port=8000, tool_secret=SECRET)   # blocks; the platform calls in
-```
-
-`http=` cannot be passed to `@tool` when the address is a tunnel, because the
-decorator runs at import and the address does not exist yet. `hosted_at` returns
-a new tool bound to an address and leaves the original alone, so a module-level
-`TOOLS` stays importable by tests.
-
-`serve()` answers every route the platform will call, read off the declaration,
-on the standard library alone: `POST /tools/{name}` per tool, the reply
-endpoint when you pass `reply=`, a route per pre-connect request, webhook
-delivery and `/healthz`. `routes()` returns the same handlers as plain callables
-to mount into an application you already have.
-
-`claim_port()` fails before the deploy rather than after it. Deploying repoints
-the stored agent, so a port still held by an earlier run would otherwise leave a
-live agent whose tool URLs answer to nothing.
+The default host is `https://agents.assemblyai.com`; `https://agents.us.assemblyai.com`
+is the US deployment. Agents, numbers and sessions are stored per host and ids
+do not cross, so keep an agent and everything attached to it on one of them.
+`deploy()` keeps its id file per host for the same reason.
 
 ## Declaring tools
 
-`@tool` turns a function into a `Tool`: the handler plus the wire definition
-the API needs. The rules below are enforced at decoration time with a
-`ConfigurationError` that says what to change, so a bad tool fails when the
-module is imported rather than after a round trip.
+`@tool` turns a function into a `Tool`: the handler plus the wire definition.
+Bare, the tool is **hosted by this process** — `serve()` answers it and the
+deploy points the platform at it. Pass `url=` to have the platform call a
+service you already run instead.
 
 ```python
 from typing import Literal, Optional
@@ -230,7 +177,6 @@ class Address(BaseModel):
 
 @tool(
     timeout_seconds=15,
-    http=hosted("/tools/schedule_delivery"),
     response_instructions=ResponseInstructions(
         success="Confirm the delivery window out loud.",
         error="Apologise and offer to take a phone number for a call back.",
@@ -251,612 +197,174 @@ def schedule_delivery(
         notes: Anything the driver should know.
     """
     return {"order_id": order_id, "window": window, "confirmed": True}
+
+@tool(url="https://api.example.com/weather", http_method=HttpMethod.GET)
+def weather(city: str) -> dict:
+    """Current weather for a city, from a service that already exists."""
+    ...
 ```
 
-- **Name.** The function name is the tool name the model calls; it must be
-  `snake_case` and must not collide with an AssemblyAI platform tool
-  (`aai_credit_card_luhn_check`, `aai_pre_connect_context`).
-- **Description.** The first paragraph of the docstring is what the model reads
-  to decide whether to call the tool. It is required. An `Args:` section
-  provides per-parameter descriptions.
-- **Parameters.** Every parameter needs a type hint. Supported: `str`, `int`,
-  `float`, `bool`, `list[T]`, `dict[str, T]`, `Literal[...]`, an `Enum`
-  subclass, `Optional[T]` / `T | None`, and pydantic `BaseModel` subclasses (nested models
-  are inlined; recursive models are refused). A parameter with a default is
-  optional in the schema. `*args`, `**kwargs` and positional-only parameters
-  cannot be described and are refused.
-- **Return type.** A return annotation is required and must be
-  JSON-serialisable: `dict`, `list`, `str`, `int`, `float`, `bool`, `None` or a
-  pydantic model.
-- **Sync or async.** Both work. A sync handler run through `Tool.invoke` is
-  moved to a worker thread so it never blocks an event loop.
+Checked at decoration, each with a `ConfigurationError` naming the rule:
+
+- **Name.** `snake_case`; not `aai_credit_card_luhn_check` or
+  `aai_pre_connect_context` (platform tools).
+- **Description.** The docstring's first paragraph — what the model reads to
+  decide whether to call it. Required. `Args:` gives per-parameter text.
+- **Parameters.** Every one type-hinted: `str`, `int`, `float`, `bool`,
+  `list[T]`, `dict[str, T]`, `Literal[...]`, `Enum`, `Optional[T]` / `T | None`,
+  pydantic `BaseModel`. A default makes it optional. No `*args` / `**kwargs`.
+- **Return type.** Required and JSON-serialisable.
 - **Options.** `timeout_seconds` (1–300, default 120: lower it for anything a
-  caller waits through), `http=` (where the platform calls, see below),
-  `response_instructions` (static text appended to the model's guidance after
-  success/failure), `dtmf_collected_arguments` (collect a parameter from the
-  phone keypad instead of speech), and `execution_mode` (only `interactive` is
-  available in v1).
+  caller waits through), `response_instructions`, `dtmf_collected_arguments`
+  (keypad input, phone only), `execution_mode` (`interactive` only in v1),
+  `url=` / `http_method=` / `headers=` for an external service.
 
-Calling a `Tool` calls the underlying function unchanged, so tools stay directly
-testable. `tool.definition()` returns the wire model and `tool.spec` the parsed
-description, schema and handler metadata.
+Calling a `Tool` calls the function unchanged, so tools stay directly testable.
 
-### Where a tool runs
+### How the platform calls a tool
 
-A tool declared **with `http=`** is served by your backend: the platform calls
-that HTTPS endpoint itself, so it works for phone calls and for any client.
-`GET`/`DELETE` send the arguments as query parameters; `POST`/`PUT`/`PATCH` send
-them as a JSON body. The response body is handed to the model as the result.
-Header values (for example an `Authorization` header your backend checks) are
-stored encrypted and never returned by the API. Pass `http_method` explicitly
-(`HttpMethod.POST`, `HttpMethod.GET`, …). The API verifies when an agent is
-created or updated that every tool and pre-connect hostname resolves in public
-DNS, so a placeholder URL is rejected; during development point the URLs at a
-tunnel (see *One file, no backend* above).
+`POST`/`PUT`/`PATCH` tools receive the arguments as a JSON body; `GET`/`DELETE`
+as query parameters (`serve()` restores numbers and booleans from the schema).
+The response is stringified for the model. A non-2xx or a timeout tells the
+model the tool failed — the caller hears an apology and **your client sees no
+error**, so read your server log and the session's `timeline` artifact.
 
-A tool declared **without** `http=` is a different thing, and almost certainly
-not what you want: the platform hands the call to whichever process is holding
-a WebSocket session, so the tool only exists while a browser or a desktop app
-is connected. A phone call has nobody to hand it to, and the SDK refuses to
-attach a number to an agent that still has one.
-`agent.client_resident_tool_names()` lists them.
+The platform **refuses a tool call carrying a value the conversation never
+established**. Take the caller's words as arguments and do the reading in the
+handler (`replies.digits_said()` helps); a value an earlier tool returned is
+also accepted.
 
-### `ToolContext`
+## Your own replies
 
-A tool may declare one parameter annotated `ToolContext`. It is recognised by
-annotation, not by name, and is excluded from the schema. The context offers
-`http` (an async HTTP client), `log`, `session_id`, `aborted` and
-`secret(name)`. Supply your own object satisfying the protocol when serving the
-tool (`tool.invoke(context=ctx, **arguments)`); calling `invoke` without
-`context=` on a tool that declares one raises `TypeError` unless the parameter
-has a default (`ctx: ToolContext = None`). The `testing` module ships an
-offline double. Handlers routed through `AgentConnection(tools=...)`
-receive the model's arguments only.
-
-## Pre-connect requests
-
-Up to two HTTPS calls made before a **phone call** is answered, typically to
-look the caller up in your CRM. Values captured from one can be sent to the
-next and can override the greeting. The captured values are exposed to the
-model through the `aai_pre_connect_context` platform tool. Like transfer
-targets and keypad input, pre-connect is a telephony feature and is inert on a
-WebSocket session.
+Set `reply=` and the platform asks your function what to say on every turn.
+The `replies` module reads the request and streams the answer:
 
 ```python
-from assemblyai_agents import Captured, Header, PreConnectRequest
+from assemblyai_agents.replies import Turn, call_tool, say, silence
 
-agent = VoiceAgent(
-    ...,
-    pre_connect=[
-        PreConnectRequest(
-            url="https://api.example.com/pre-connect/whois",
-            headers=[Header(name="Authorization", value="Bearer ...")],
-            returns=[Captured(name="customer_tier", path="customer.tier", default="standard")],
-            timeout_ms=400,
-            allow_overrides=True,   # a top-level "greeting" key in the response replaces the greeting
-        ),
-        PreConnectRequest(url="https://api.example.com/pre-connect/tier", sends=["customer_tier"]),
-    ],
-)
-```
-
-Your endpoint has to answer within the request's timeout (800 ms ceiling per
-request; `timeout_ms` only lowers it). Pre-connect **fails open**: a timeout or
-error means the call proceeds without the values. A response with a top-level
-`"reject": true` aborts the call, which is the one thing a pre-connect endpoint
-can do to stop a conversation. `sends` may only name values captured by an
-earlier entry; the SDK checks the order before deploying.
-
-## Phone calls
-
-### Give an agent a phone number
-
-```python
-from assemblyai_agents.models.rest import NumberType, PurchaseAvailablePhoneNumberRequest
-
-number = client.phone_numbers.purchase_available(
-    PurchaseAvailablePhoneNumberRequest(
-        country_code="US", number_type=NumberType.local, area_code=415,
-        agent_id=deployed.id,
-    )
-)
-print(number.phone_number)   # +1415...
-```
-
-Bring your own number by pointing your carrier's SIP trunk at AssemblyAI and
-importing it, then assigning an agent:
-
-```python
-from assemblyai_agents.models.rest import ImportPhoneNumberRequest, PhoneNumberAssignAgentRequest
-
-client.phone_numbers.import_(ImportPhoneNumberRequest(
-    phone_number="+14155550123",
-    termination_uri="example.pstn.twilio.com",
-))
-client.phone_numbers.assign_agent(
-    "+14155550123",
-    PhoneNumberAssignAgentRequest(agent_id=deployed.id),
-    agent=agent,   # optional: lets the SDK refuse a declaration with client-resident tools
-)
-```
-
-Other operations: `list()`, `get(number)`, `unassign_agent(number)`,
-`deregister(number)`, and `purchase(PurchasePhoneNumberRequest(phone_number=...))`
-for a specific number.
-
-### Place an outbound call
-
-```python
-from assemblyai_agents.models.rest import CreateCallRequest
-
-call = client.calls.create(CreateCallRequest(from_number=number.phone_number, to_number="+12125550148"))
-print(call.id, call.status)          # dialing
-print(client.calls.get(call.id).status)
-```
-
-The `from_number` must be registered to the account with an agent assigned; that
-agent handles the call. `client.calls.list(status=..., direction=...)` pages
-through call history.
-
-### Transfers to a human
-
-```python
-from assemblyai_agents import HumanTransfer
-
-agent = VoiceAgent(
-    ...,
-    outbound_trunk_id="trunk_...",     # required whenever a human transfer target exists
-    transfer_targets=[
-        HumanTransfer(name="front desk", phone_number="+14155550100"),                 # cold
-        HumanTransfer(name="on-call", phone_number="+14155550101", mode="warm",
-                      consult_instructions="Summarise the caller's issue in one sentence.",
-                      consult_timeout=45, record_consult=False),
-    ],
-)
-```
-
-Numbers must be E.164. The consult fields only apply to a warm transfer and are
-refused on a cold one. Transfer targets are ignored on WebSocket sessions.
-
-### Keypad (DTMF) input
-
-Collect a parameter from the phone keypad rather than speech, for example a
-card number:
-
-```python
-from assemblyai_agents.models.rest import DtmfCollectionProfile
-
-@tool(
-    http=hosted("/tools/take_payment"),
-    timeout_seconds=120,        # keypad entry plus a confirmation takes a while
-    dtmf_collected_arguments=[
-        DtmfCollectionProfile(
-            parameter_name="card_number", min_digits=15, max_digits=16,
-            sensitive=True,     # required on every profile, see below
-            confirm=True,
-            prompt="Using your keypad, enter your card number, then press pound.",
-        )
-    ],
-)
-async def take_payment(card_number: str, amount: float) -> dict:
-    """Charge the caller's card for the order total."""
-    ...
-```
-
-Two rules the generated model does not express:
-
-- **`sensitive` must be stated** on every profile, `True` or `False`. Leaving it
-  out is rejected with `sensitive: must be stated`. `True` suppresses every
-  spoken and stored trace of the value, which is what a card number needs.
-- **A tool with keypad profiles cannot run over WebSocket.** The platform
-  refuses the session with `invalid_value: tool '…' collects '…' from the phone
-  keypad (DTMF), which only exists on telephony calls` and closes it. If you
-  also want to drive the agent from a terminal, put the profiles behind a flag
-  and deploy two shapes from the one declaration.
-
-## Webhooks
-
-Subscribe to `session.started`, `session.completed`, `call.connected`,
-`call.ended` and `call.failed`:
-
-```python
-from assemblyai_agents.models.rest import CreateWebhookSubscriptionRequest, WebhookEvent
-
-sub = client.webhooks.create(CreateWebhookSubscriptionRequest(
-    url="https://api.example.com/webhooks/voice-agents",
-    events=[WebhookEvent.session_completed, WebhookEvent.call_ended],
-    secret="a-random-secret-of-at-least-32-characters",
-    agent_id=deployed.id,    # optional: only this agent's events
-))
-```
-
-Every delivery carries an `X-AAI-Signature` header. Verify it against the exact
-raw request body **before** parsing any JSON:
-
-```python
-from assemblyai_agents import verify, WebhookVerificationError
-
-@app.post("/webhooks/voice-agents")
-async def webhook(request: Request):
-    body = await request.body()
-    try:
-        event = verify(body, request.headers.get("X-AAI-Signature", ""), WEBHOOK_SECRET)
-    except WebhookVerificationError as exc:
-        raise HTTPException(400, str(exc))
-    ...
-```
-
-`client.webhooks.list_deliveries(session_id)` and
-`list_latest_deliveries(session_id)` show what was delivered for a session;
-`list()`, `get()`, `update()` and `delete()` manage subscriptions.
-
-## Audio, transcription and turn detection
-
-`input=` and `output=` take typed helpers that emit exactly what the stored
-agent carries:
-
-```python
-from assemblyai_agents import AudioFormat, AudioInput, AudioOutput
-
-agent = VoiceAgent(
-    name="Pizza Line",
-    voice="ivy",
-    system_prompt="...",
-    input=AudioInput(
-        format=AudioFormat(encoding="audio/pcm", sample_rate=24000),
-        keyterms=["margherita", "calzone", "W004"],           # up to 100
-        transcription_mode="balanced",                         # or min_latency / max_accuracy
-        language_codes=["en"],
-        voice_focus="near-field",                              # or far-field
-        extra={"turn_detection": {"min_silence": 600, "max_silence": 2500}},
-    ),
-    output=AudioOutput(volume=90.0),
-)
-```
-
-- Encodings: `audio/pcm` (16-bit little-endian mono; `sample_rate` must be
-  24000 and is only valid on this encoding), `audio/pcmu` and `audio/pcma`
-  (8 kHz telephony codecs).
-- Turn detection is passed through `extra`. Fields: `min_silence` (ms, default
-  1000), `max_silence` (ms, default 3000), `interrupt_response` (default
-  `True`), `interruption_delay`, `vad_threshold` (default 0.5).
-- `extra` refuses any key the class already models, so a value can never be set
-  twice with one silently winning.
-- The voice is set once, at the top level (`voice="ivy"`); `AudioOutput` does
-  not model it.
-
-## Bring your own LLM
-
-Response generation can move to your backend too. Point the agent at any
-OpenAI-compatible chat-completions endpoint and the platform asks *it* what to
-say on every turn, while still handling speech, turn-taking and telephony. The
-key is write-only and never returned.
-
-```python
-from assemblyai_agents.models.rest import LlmConfigRequest
-
-agent = VoiceAgent(
-    ...,
-    llm=LlmConfigRequest(
-        base_url="https://api.example.com/v1",   # or https://api.openai.com/v1
-        model="pizza-line-rules",                # whatever your endpoint expects
-        api_key="...",                           # sent as Authorization: Bearer
-    ),
-)
-```
-
-### `assemblyai_agents.byo` reads the request and answers it
-
-Reading the transcript and streaming Server-Sent Events is contract detail, not
-your agent. `byo` is that detail and nothing else: thirteen names, no
-framework, no opinion about how you decide.
-
-```python
-from assemblyai_agents.byo import Turn, call_tool, say, silence, stream
-
-def decide(turn):
+def decide(turn: Turn):
     if turn.pending and turn.pending.name == "verify_caller":
         return say("Thanks, how can I help?") if turn.pending.get("verified") else say("Try again?")
     if not turn.caller_said:
         return say("Could you give me your full name?")
     return call_tool("verify_caller", caller_said=turn.caller_said)
-
-@app.post("/v1/chat/completions")          # any framework; this one is FastAPI
-async def replies(request: Request):
-    body = await request.json()
-    turn = Turn.from_request(body)
-    return StreamingResponse(stream(turn, decide(turn)), media_type="text/event-stream")
 ```
 
-Three functions say what happens next: `say(text)`, `call_tool(name, **args)`
-and `silence()`, which is how a finished call ends since an agent cannot hang
-up. `call_tool` drops arguments the conversation never established, so the
-platform accepts the call.
+`turn.pending` is the newest tool result nothing has been said about — the cue
+to speak. `turn.result_of(name)` reads an earlier result back rather than
+calling again. `turn.preconnect` is what a phone call's pre-connect lookup
+captured. `silence()` is how a finished call ends; an agent cannot hang up.
 
-`Turn` is the request already read, with the traps handled:
+The contract `replies` handles for you: every request streams (SSE, always);
+about ten seconds to answer; the tool message is not the last one after a tool
+runs; refused calls come back as prose, not JSON; there is no session id on the
+request, so state is read out of the transcript. Call any model you like from
+inside `decide` — the [LLM Gateway](https://www.assemblyai.com/docs/llm-gateway)
+takes the same key.
 
-| | |
-| --- | --- |
-| `turn.caller_said` | the caller's latest words, from a user message or a quoted instruction |
-| `turn.pending` | the tool result nothing has been said about yet, which is the cue to speak |
-| `turn.pending.ran` | `False` when the platform refused the call, so a refusal is never reported as a result |
-| `turn.preconnect` | the pre-connect captures, read out of the tool result the platform injects |
-| `turn.result_of(name)` | an earlier result, to read back rather than call again |
-| `turn.answer_following("your postcode?")` | a value you collected over several turns |
-| `turn.said_before(line)` | with the caveat that an interrupted turn does not always come back |
-| `digits_said("four four seven one")` | `"4471"`, and `"forty one eleven"` gives `"4111"` |
+## Pre-connect
 
-How you organise `decide` is up to you. The starter shows one way, as forty
-lines of ordered stages in its own file, because that is an opinion and
-opinions belong in an example rather than in the SDK.
-
-### Worked endpoints
-
-One file with tools and replies together, subagent routing with a different
-model per stage, and a starter project with an offline rehearsal harness are all
-in the examples repository: https://github.com/dan-ince-aai/assemblyai-agents-examples
-
-### What the platform sends your endpoint
-
-Captured from a live session, so build against this rather than the OpenAI docs
-alone:
-
-- `POST {base_url}/chat/completions`, `Authorization: Bearer <your api_key>`,
-  `User-Agent: LiveKit Agents/...`, and a 10 second read timeout, so get the
-  first chunk out fast and do slow work in a tool.
-- `stream: true` on every call, with `stream_options: {"include_usage": true}`.
-  Server-Sent Events are required; a plain JSON body will not do.
-- `messages[0]` is your `system_prompt` **with the platform's own spoken-output
-  guidance appended** (no formatting characters, how to say identifiers, dates
-  and emails aloud, when to prefer a tool over asking). The greeting arrives as
-  an `assistant` message.
-- `tools` carries the agent's tools in OpenAI function form with
-  `tool_choice: "auto"`, except the platform nests a second `type: "function"`
-  plus its own `timeout_seconds` and `execution_mode` inside `function`. Read
-  the name from `tool["function"]["name"]`.
-- Emit `tool_calls` and the platform runs the tool, then calls you again with a
-  `tool` message carrying the result and its `tool_call_id`, followed by a
-  `system` note such as "The function call … has just completed". So the tool
-  message is usually **not** the last one: treat "a tool result with no
-  assistant text after it" as the cue to answer, and read a repeated call's
-  answer back out of the transcript instead of asking for it again. A failed
-  call comes back with coaching text appended, and after three consecutive
-  failures the platform tells you to stop retrying.
-- **Arguments must be values the call established.** The platform checks each
-  one against the conversation and refuses to run the tool otherwise, returning
-  a note that says so: "The call has not established a value for `account_ref` …
-  Never invent a value." An empty string counts as invented, so omit an unknown
-  optional argument rather than sending `""`. Values the caller spoke, or that
-  an earlier tool returned, are accepted.
-- **Pre-connect captures arrive here too**, as an `aai_pre_connect_context` tool
-  result at the top of the transcript:
-  `{"variables": {"account_ref": "…", "consumer_first_name": "…"}}`.
-- **Keypad-collected parameters are hidden from you.** The platform strips them
-  from the tool schema it shows your endpoint and collects them itself. A
-  collection that ends early returns prose rather than the tool's JSON, so a
-  short entry is not a declined card.
-- A `tool` message is therefore not always JSON. Parse defensively.
-
-## Sessions, recordings and transcripts
+Look the caller up before a phone call is answered. Give the request a
+`handler=` and this process serves it at `/pre-connect/{name}`:
 
 ```python
-for s in client.sessions.list(agent_id=deployed.id, status="completed"):
-    print(s.id, s.duration_seconds, s.public_close_reason)
+from assemblyai_agents import Captured, PreConnectRequest
 
-session = client.sessions.get("sess_...")
-for artifact in session.artifacts or []:
-    print(artifact.type, artifact.content_type, artifact.url)
-```
+def lookup(payload: dict) -> dict:
+    patient = crm.find_by_phone(payload.get("from_number", ""))
+    if patient is None:
+        return {"matched": False}
+    return {"matched": True, "reference": patient.reference,
+            "greeting": f"Welcome back, {patient.first_name}. How can I help?"}
 
-Once a session completes it carries three artifacts as presigned URLs: `audio`
-(an Ogg recording), `timeline` (JSON: every turn with what triggered it, such as
-`reply_create` or `tool_result`, which is the place to look when a tool call
-went wrong) and `metadata` (JSON).
-
-```python
-# a failed hosted tool never surfaces on the client; the timeline shows it
-import httpx
-timeline = next(a for a in session.artifacts if a.type == "timeline")
-print(httpx.get(timeline.url).json())
-```
-
-## The realtime WebSocket
-
-`AgentConnection` connects to a deployed agent from a terminal: it mints a
-short-lived token, opens the WebSocket, binds the agent, streams the microphone
-in and plays replies out (with barge-in), and answers `tool.call` events for
-client-resident tools with the functions in `tools=`. Callbacks: `on_ready`,
-`on_user_transcript`, `on_agent_transcript`, `on_agent_delta`, `on_agent_audio`,
-`on_error`. Pass `audio=False` to disable device audio and handle `reply.audio`
-events yourself.
-
-For your own transport (a browser, a telephony bridge, a test harness) use the
-session it is built on:
-
-```python
-import asyncio
-from assemblyai_agents import AsyncClient, base64_to_pcm
-from assemblyai_agents.models.ws import (
-    ReplyAudio, SessionEnded, SessionReady, ToolCall, TranscriptAgent, TranscriptUser,
+agent = VoiceAgent(
+    ...,
+    pre_connect=[PreConnectRequest(
+        handler=lookup,
+        returns=[Captured(name="reference", path="reference")],
+        allow_overrides=True,          # the response's top-level `greeting` replaces the greeting
+        timeout_ms=800,
+    )],
 )
-
-async def main():
-    async with AsyncClient() as client:
-        token = (await client.tokens.create()).token
-        async with await client.sessions.connect(token=token, auto_resume=True) as session:
-            await session.update(agent_id="agent_...")
-            async for event in session:
-                match event:
-                    case SessionReady():
-                        print("ready", event.session_id)
-                    case TranscriptUser():
-                        print("you:", event.text)
-                    case TranscriptAgent():
-                        print("agent:", event.text)
-                    case ReplyAudio():
-                        pcm = base64_to_pcm(event.data)   # 24 kHz 16-bit mono PCM
-                    case ToolCall():                      # only for client-resident tools
-                        result = await lookup_order(**event.arguments)
-                        await session.send_tool_result(event.call_id, str(result))
-                    case SessionEnded():
-                        break
-
-asyncio.run(main())
 ```
 
-Client → server methods: `update(...)`, `send_audio(pcm_bytes)`,
-`send_tool_result(call_id, result, is_error=False)`, `send_message(text, role="user")`,
-`create_reply(instructions=None)`, `cancel_reply(reply_id)`, `resume(session_id)`,
-`end()`. `send_message` appends a message to the conversation history and
-`create_reply` asks the agent to speak, optionally steered by `instructions`;
-neither is needed on a normal audio session.
+Pre-connect is telephony-only, fails open (a timeout or error means the call
+proceeds without the values), and has an 800 ms ceiling. A top-level
+`"reject": true` aborts the call. What it captured reaches the model — and
+`turn.preconnect` — as the `aai_pre_connect_context` tool result. Up to two
+requests; pass `url=` instead of `handler=` for a service you already run.
 
-Server → client events (all pydantic models in `assemblyai_agents.models.ws`):
-
-| Event type | Model | Notes |
-| --- | --- | --- |
-| `session.ready` | `SessionReady` | `session_id`, `resume_token`, the effective `config` |
-| `session.updated` | `SessionUpdatedEvent` | after a successful `update` |
-| `session.error` | `SessionError` | `code`, `message`, `param` |
-| `session.ended` | `SessionEnded` | durations |
-| `input.speech.started` / `.stopped` | `InputSpeechStarted` / `InputSpeechStopped` | barge-in cue |
-| `reply.started` / `reply.audio` / `reply.done` | `ReplyStarted` / `ReplyAudio` / `ReplyDone` | `ReplyAudio.data` is base64 PCM |
-| `tool.call` | `ToolCall` | `call_id`, `name`, `arguments` |
-| `transcript.user` | `TranscriptUser` | final user turn |
-| `transcript.agent` / `.delta` | `TranscriptAgent` / `TranscriptAgentDelta` | final and streaming agent text |
-
-Anything the SDK does not recognise arrives as an `UnknownEvent` with the raw
-payload, so a newer server never breaks the loop.
-
-- **Auto-resume.** With `auto_resume=True`, an abnormal disconnect is retried
-  with backoff for up to 25 s and the session is resumed with its
-  `resume_token`; terminal errors such as `session_expired` are raised as
-  `RealtimeError`.
-- **Inline configuration.** You do not need a stored agent: `session.update(
-  system_prompt=..., greeting=..., tools=[...], input=..., output=...,
-  webhook=...)` configures the session directly. `agent_id` cannot be combined
-  with other fields in the same update.
-- **Tokens for browsers and apps.** `client.tokens.create()` mints a short-lived
-  token (60 s to connect by default, up to 600) that a front end can use on the
-  WebSocket handshake instead of your API key.
-- **Audio helpers.** `pcm_to_base64`, `base64_to_pcm`, `pcm16_to_ulaw`,
-  `ulaw_to_pcm16`, `pcm16_to_alaw`, `alaw_to_pcm16` for telephony codecs, and
-  `microphone_stream(session)` / `PlaybackSink` for device audio.
-
-## Errors, retries and idempotency
-
-Every API failure is an `APIError` subclass keyed on the HTTP status, so an error
-code this version has never seen still lands on the right class:
-
-| Status | Exception |
-| --- | --- |
-| 400, 405 | `BadRequestError` |
-| 401 | `AuthenticationError` |
-| 404 | `NotFoundError` |
-| 409 | `ConflictError` |
-| 422 | `ValidationError` |
-| 5xx | `ServerError` |
-| 2xx with a non-JSON body | `ResponseError` |
-
-Each carries `status`, `code` (compare with the `ErrorCode` constants, e.g.
-`ErrorCode.AGENT_NOT_FOUND`), `message`, `param`, `request_id`, `errors` and the
-`raw` response. Problems caught before a request is sent raise
-`ConfigurationError`; WebSocket failures raise `RealtimeError`.
+## Phone calls
 
 ```python
-from assemblyai_agents import ErrorCode, NotFoundError
+from assemblyai_agents import Client
+from assemblyai_agents.models.rest import NumberType, PurchaseAvailablePhoneNumberRequest
 
-try:
-    client.agents.get("agent_missing")
-except NotFoundError as exc:
-    assert exc.code == ErrorCode.AGENT_NOT_FOUND
-    print(exc.request_id)
+number = Client().phone_numbers.purchase_available(       # billable
+    PurchaseAvailablePhoneNumberRequest(country_code="US", number_type=NumberType.local,
+                                        area_code=415, agent_id=agent_id)
+)
 ```
 
-- **Retries.** 408, 429, 5xx and a 409 `idempotency_in_progress` are retried up
-  to `max_retries` (default 3) with exponential backoff and jitter, honouring
-  `Retry-After` up to 60 s. Connection errors are retried the same way.
-- **Idempotency.** Calls that create billable side effects
-  (`calls.create`, phone number purchase and import) mint an `Idempotency-Key`
-  once per logical request and reuse it across retries. Pass your own via
-  `headers={"Idempotency-Key": ...}` on `client.request` to control it.
-- **Escape hatch.** `client.request(method, path, json=..., params=...)`
-  returns the decoded JSON of any endpoint with the same auth, retries and error
-  handling; `client.request_raw(...)` returns the undecoded `RawResponse`.
-- **Pagination.** Every `list()` returns a pager: iterate it directly for all
-  items, or call `next_page()` for one page at a time.
+Bring your own number by pointing your carrier's SIP trunk at AssemblyAI, then
+`import_()` and `assign_agent()`. Hand a live call to a human with
+`transfer_targets=[HumanTransfer(...)]` (needs `outbound_trunk_id`). Place a
+call with `client.calls.create(CreateCallRequest(from_number, to_number))`.
 
-## Testing your tools
+Everything on the declaration works on a phone call and a WebSocket session
+alike, because every tool is served over HTTPS by this process.
 
-`assemblyai_agents.testing` runs a tool with no network at all:
+## Webhooks and sessions
 
 ```python
-import pytest
-from assemblyai_agents import ToolContext, VoiceAgent, tool
+agent.serve(webhook_secret=WEBHOOK_SECRET, on_event=lambda e: print(e["event"]))
+```
+
+`POST /webhooks/voice-agents` is verified with `assemblyai_agents.verify()` over
+the raw body before `on_event` runs. Subscribe with `client.webhooks.create(...)`.
+Every session leaves a recording, a turn-by-turn timeline and metadata in
+`client.sessions.get(id).artifacts`.
+
+## Testing
+
+```python
 from assemblyai_agents.testing import create_tool_context, get_tool
 
-@tool
-async def lookup_order(order_id: str, ctx: ToolContext) -> dict:
-    """Look up one of the caller's orders by its ID."""
-    response = await ctx.http.get(
-        f"https://api.pizzapalace.com/orders/{order_id}",
-        headers={"authorization": ctx.secret("orders_api_key")},
-    )
-    return response.json()
-
-agent = VoiceAgent(name="Pizza Line", voice="ivy", system_prompt="...", tools=[lookup_order])
-
-@pytest.mark.asyncio
-async def test_lookup_order():
-    ctx = create_tool_context(secrets={"orders_api_key": "test-key"})
-    ctx.http.stub("GET", "https://api.pizzapalace.com/orders/W004", json={"status": "shipped"})
-
-    result = await get_tool(agent, "lookup_order").invoke(context=ctx, order_id="W004")
-
-    assert result == {"status": "shipped"}
-    assert ctx.http.calls[0].headers["authorization"] == "test-key"
+ctx = create_tool_context(secrets={"orders_api_key": "test"})
+ctx.http.stub("GET", "https://api.example.com/orders/W004", json={"status": "shipped"})
+await get_tool(agent, "lookup_order").invoke(context=ctx, order_id="W004")
 ```
 
-An unstubbed request is refused with an error that lists what *is* stubbed, so a
-tool cannot reach the network by accident. Assert on `agent.to_request()` to
-pin the exact payload a declaration produces.
+`agent.hosted_at("https://test.invalid", secret="k").to_request()` is the exact
+payload the deploy would send, with no network. The examples' starter kit
+rehearses whole calls offline through the same loop the platform runs.
 
-## Sync and async
+## Talking to an agent from a terminal
 
-`Client` and `AsyncClient` expose the same resources (`agents`, `sessions`,
-`calls`, `phone_numbers`, `tokens`, `webhooks`, `builtin_tools`) with the same
-method names. The realtime WebSocket (`sessions.connect`, `AgentConnection`) is
-async only. Both clients are context managers and release their connection
-pools on exit.
+```python
+from assemblyai_agents import AgentConnection
 
-## Using this SDK with a coding agent
-
-The Claude Code skill and an `AGENTS.md` for other coding agents live with the
-examples, because they refer to those files by path:
-
-```bash
-git clone https://github.com/dan-ince-aai/assemblyai-agents-examples.git
-cp -r assemblyai-agents-examples/.claude/skills/assemblyai-agents-sdk ~/.claude/skills/
+async with AgentConnection(agent_id="agent_...") as conn:     # needs the [audio] extra
+    conn.on_agent_transcript(print)
+    await conn.run()
 ```
 
-## Development
+A test client — microphone in, speaker out. Nothing about the agent is
+configured here and no tool runs here.
 
-```bash
-git clone https://github.com/dan-ince-aai/assemblyai-agents-python.git
-cd assemblyai-agents-python
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,audio]"
-pytest
-```
+## Upgrading from 0.1
 
-The test suite runs entirely offline against mocked transports. Only
-`tests/test_audio_io_surface.py` imports the real `pyaudio`; it skips itself
-where PortAudio is not installed.
+| Was | Now |
+| --- | --- |
+| `assemblyai_agents.byo` | `assemblyai_agents.replies` (alias kept, deprecated) |
+| `llm=LlmConfigRequest(base_url, model, api_key)` | `reply=decide` — derived from the address (alias kept, deprecated) |
+| `@tool(http=PlaintextHttpToolConfig(...))` | bare `@tool` to host here; `@tool(url=...)` for a service you run (alias kept, deprecated) |
+| `tool.hosted_at(...)` in a `build(base_url)` | `agent.serve()` / `agent.deploy(public_url=...)` bind everything |
+| `serve(agent, reply=, tool_secret=, llm_key=, pre_connect=)` | `agent.serve(secret=...)`; `reply` and handlers come off the declaration (aliases kept, deprecated) |
+| `PreConnectRequest(url=...)` + `serve(pre_connect={path: fn})` | `PreConnectRequest(handler=fn)` |
+| `AgentConnection(tools=...)`, `conn.tool()`, `ToolRouter` | removed — every tool is served over HTTPS |
+| `agent.client_resident_tool_names()`, `assign_agent(agent=)` | removed / no-op |
 
-`assemblyai_agents/models/rest.py` and `assemblyai_agents/models/ws.py` are
-generated from the API's OpenAPI and WebSocket schemas. Do not edit them by
-hand; they are replaced wholesale when the API changes.
+## Documentation
 
-## License
-
-MIT. See [LICENSE](LICENSE).
+Full docs, with a page per module, at the [AssemblyAI docs](https://www.assemblyai.com/docs/voice-agents/voice-agent-sdk).

@@ -23,6 +23,7 @@ from ._pagination import AsyncPager, SyncPager
 from ._response import RawResponse
 from ._telephony import Captured, Header, HumanTransfer, PreConnectRequest
 from ._tool import Tool, tool
+from .deploy import deploy
 from ._version import __version__
 from .audio import (
     alaw_to_pcm16,
@@ -33,7 +34,7 @@ from .audio import (
     ulaw_to_pcm16,
 )
 from .audio_io import DeviceAudioNotInstalledError, PlaybackSink, microphone_stream
-from .connection import AgentConnection, ToolRouter
+from .connection import AgentConnection
 
 # The generated request models a customer has to construct to reach the raw
 # escape hatch. Only these five are re-exported: the rest of `models.rest` is
@@ -117,7 +118,6 @@ __all__ = [
     "PlaybackSink",
     "microphone_stream",
     "AgentConnection",
-    "ToolRouter",
     "VoiceAgent",
     "AudioFormat",
     "AudioInput",
@@ -129,4 +129,5 @@ __all__ = [
     "tool",
     "Tool",
     "ToolContext",
+    "deploy",
 ]

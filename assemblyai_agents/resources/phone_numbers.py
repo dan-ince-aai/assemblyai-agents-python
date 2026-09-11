@@ -1,8 +1,8 @@
+import warnings
 from typing import TYPE_CHECKING, Optional
 from urllib.parse import quote
 
 from .._agent import VoiceAgent
-from .._exceptions import ConfigurationError
 from .._pagination import AsyncPager, SyncPager
 from ..models.rest import (
     ImportPhoneNumberRequest,
@@ -16,30 +16,14 @@ if TYPE_CHECKING:
     from .._client import AsyncClient, Client
 
 
-def _reject_client_resident_tools(agent: Optional[VoiceAgent]) -> None:
-    """Refuse a phone number on a declaration holding client-resident tools.
-
-    A client-resident tool is resolved by the connected client over the
-    WebSocket, and the
-    telephony transport has no such resolver. The tool is still offered to the
-    model, so the call waits out its whole `timeout_seconds` on a future nothing
-    can complete, and the caller hears silence.
-
-    Only what the caller already holds is checked. With a bare agent id and no
-    declaration the SDK cannot know what the stored agent's tools are, and it
-    does not fetch the agent to find out.
-    """
+def _warn_agent_kwarg(agent: Optional[VoiceAgent]) -> None:
     if agent is None:
         return
-    resident = agent.client_resident_tool_names()
-    if not resident:
-        return
-    named = ", ".join(f"`{name}`" for name in resident)
-    raise ConfigurationError(
-        f"agent `{agent.name}` holds client-resident tools ({named}), which only a "
-        f"WebSocket session can answer. On a phone call the model is still offered "
-        f"them and every call waits out the tool timeout in silence. Give each an "
-        f"`http=` config, or drop it before attaching a number."
+    warnings.warn(
+        "assign_agent(agent=...) no longer does anything: every tool on a declaration "
+        "is served over HTTPS, so there is nothing to refuse. Drop the argument.",
+        DeprecationWarning,
+        stacklevel=3,
     )
 
 
@@ -112,7 +96,7 @@ class PhoneNumbersResource:
         *,
         agent: Optional[VoiceAgent] = None,
     ) -> None:
-        _reject_client_resident_tools(agent)
+        _warn_agent_kwarg(agent)
         self._client.request_raw(
             "PUT",
             f"/v1/phone-numbers/{quote(number, safe='')}/agent",
@@ -189,7 +173,7 @@ class AsyncPhoneNumbersResource:
         *,
         agent: Optional[VoiceAgent] = None,
     ) -> None:
-        _reject_client_resident_tools(agent)
+        _warn_agent_kwarg(agent)
         await self._client.request_raw(
             "PUT",
             f"/v1/phone-numbers/{quote(number, safe='')}/agent",

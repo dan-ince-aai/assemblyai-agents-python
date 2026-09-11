@@ -7,7 +7,7 @@ comments say which, because that is the part a reader cannot guess.
 import json
 
 import pytest
-from assemblyai_agents.byo import (
+from assemblyai_agents.replies import (
     Call,
     Say,
     Silence,

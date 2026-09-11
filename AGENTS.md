@@ -21,13 +21,19 @@ answers the requests the platform sends. That is the whole remit.
   learn a tool name is not snake_case is a round trip wasted.
 - **Opinions about how to run a conversation do not belong here.** How to stage
   a call, when to reach for a model, how to organise a reply function: all of
-  that is an example, not an API. `assemblyai_agents.byo` gives the pieces
+  that is an example, not an API. `assemblyai_agents.replies` gives the pieces
   (`Turn`, `say`, `call_tool`, `stream`); it does not give a framework.
-- **Nothing in the package knows a tunnel exists.** Tool URLs come from whatever
-  the caller passes to `hosted_at`, and the package does not care what put the
-  value there — a tunnel today, a deployment later. The ngrok helper is a script
-  in the examples repository and is deleted when agent code can be deployed
-  directly.
+- **Nothing in the package knows a tunnel exists.** The address comes from
+  `public_url=` or `PUBLIC_BASE_URL`, and the package does not care what put
+  the value there — a tunnel today, a deployment later. `agent.hosted_at()`
+  binds every hosted URL from that one address; the ngrok helper is a script
+  in the examples repository.
+- **Two modes, one switch.** `system_prompt` shapes the platform's model;
+  `reply=` replaces it with your code. There is no third mode and no field for
+  wiring the endpoint by hand — the endpoint is this process.
+- **Every tool is served over HTTPS by the process that declared it.** There
+  are no client-resident tools, so nothing differs between a phone call and a
+  WebSocket session.
 - **No new vocabulary for a wire field.** Every `VoiceAgent` field maps onto
   `AgentCreateRequest`, so `to_request()` is inspectable and assertable without
   a network call. A shortcut that relocates a field is a second vocabulary to

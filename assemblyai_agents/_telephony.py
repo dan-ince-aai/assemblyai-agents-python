@@ -1,6 +1,6 @@
 import re
-from dataclasses import dataclass
-from typing import Literal, Optional
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Literal, Optional
 
 from ._exceptions import ConfigurationError
 from .models.rest import (
@@ -132,7 +132,16 @@ class Captured:
 
 @dataclass(frozen=True, kw_only=True)
 class PreConnectRequest:
-    """One HTTPS call made before the conversation starts.
+    """One HTTPS call made before a phone call is answered.
+
+    Give it a ``handler`` and this process serves it: ``serve()`` answers
+    ``POST /pre-connect/{handler name}`` with your function, and the deploy
+    binds that address. Give it a ``url`` instead to have the platform call a
+    service you already run. One or the other.
+
+        PreConnectRequest(handler=lookup,
+                          returns=[Captured(name="tier", path="customer.tier")],
+                          allow_overrides=True)
 
     Three behaviours are not in the wire model and will surprise anyone who
     assumes otherwise.
@@ -153,7 +162,8 @@ class PreConnectRequest:
     vocabulary is closed and holds one value, ``greeting``.
     """
 
-    url: str
+    url: Optional[str] = None
+    handler: Optional[Callable[[dict], Any]] = None
     method: Method = "POST"
     headers: Optional[list[Header]] = None
     sends: Optional[list[str]] = None
@@ -162,7 +172,18 @@ class PreConnectRequest:
     allow_overrides: bool = False
 
     def __post_init__(self) -> None:
-        if not self.url.startswith("https://"):
+        if self.url is None and self.handler is None:
+            raise ConfigurationError(
+                "a pre-connect request needs `handler=` (a function this process serves) "
+                "or `url=` (a service you already run). Binding a handler to an address "
+                "sets both, which is fine."
+            )
+        if self.handler is not None and not callable(self.handler):
+            raise ConfigurationError(
+                f"pre-connect handler={self.handler!r} is not callable. Pass a function "
+                f"taking the request body as a dict and returning a dict."
+            )
+        if self.url is not None and not self.url.startswith("https://"):
             raise ConfigurationError(
                 f"pre-connect url={self.url!r} is not https. The API accepts https "
                 f"endpoints only."
@@ -189,7 +210,31 @@ class PreConnectRequest:
     def captured_names(self) -> tuple[str, ...]:
         return tuple(captured.name for captured in self.returns or ())
 
+    @property
+    def path(self) -> str:
+        """The route this process serves the handler at."""
+        if self.handler is None:
+            raise ConfigurationError("this pre-connect request has a url, not a handler.")
+        return f"/pre-connect/{self.handler.__name__}"
+
+    def hosted_at(self, public_url: str, *, secret: Optional[str] = None) -> "PreConnectRequest":
+        """The same request, with its handler's URL bound to this address."""
+        if self.handler is None:
+            return self
+        headers = list(self.headers or [])
+        if secret and not any(h.name.lower() == "authorization" for h in headers):
+            headers.insert(0, Header(name="Authorization", value=f"Bearer {secret}"))
+        return replace(
+            self, url=f"{public_url.rstrip('/')}{self.path}", headers=headers or None
+        )
+
     def to_request(self) -> PlaintextPreConnectRequest:
+        if self.url is None:
+            raise ConfigurationError(
+                f"pre-connect handler `{self.handler.__name__}` has no address yet. Bind "
+                f"the declaration first: `agent.hosted_at(public_url, secret=...)`, or "
+                f"pass `public_url=` to VoiceAgent, or deploy through `agent.deploy()`."
+            )
         return PlaintextPreConnectRequest(
             http=PlaintextHttpToolConfig(
                 url=self.url,
