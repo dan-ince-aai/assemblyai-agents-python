@@ -21,7 +21,7 @@ answers the requests the platform sends. That is the whole remit.
   learn a tool name is not snake_case is a round trip wasted.
 - **Opinions about how to run a conversation do not belong here.** How to stage
   a call, when to reach for a model, how to organise a reply function: all of
-  that is an example, not an API. `assemblyai_agents.byo` gives the pieces
+  that is an example, not an API. `assemblyai_agents.replies` gives the pieces
   (`Turn`, `say`, `call_tool`, `stream`); it does not give a framework.
 - **Nothing in the package knows a tunnel exists.** Tool URLs come from whatever
   the caller passes to `hosted_at`, and the package does not care what put the

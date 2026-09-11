@@ -545,14 +545,14 @@ agent = VoiceAgent(
 )
 ```
 
-### `assemblyai_agents.byo` reads the request and answers it
+### `assemblyai_agents.replies` reads the request and answers it
 
 Reading the transcript and streaming Server-Sent Events is contract detail, not
-your agent. `byo` is that detail and nothing else: thirteen names, no
+your agent. `replies` is that detail and nothing else: thirteen names, no
 framework, no opinion about how you decide.
 
 ```python
-from assemblyai_agents.byo import Turn, call_tool, say, silence, stream
+from assemblyai_agents.replies import Turn, call_tool, say, silence, stream
 
 def decide(turn):
     if turn.pending and turn.pending.name == "verify_caller":

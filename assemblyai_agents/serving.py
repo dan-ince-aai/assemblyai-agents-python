@@ -34,7 +34,7 @@ from typing import Any, Callable, Mapping, Optional
 from urllib.parse import parse_qsl, urlsplit
 
 from . import webhooks as _webhooks
-from .byo import Turn, json_body, stream
+from .replies import Turn, json_body, stream
 
 _JSON = "application/json"
 
