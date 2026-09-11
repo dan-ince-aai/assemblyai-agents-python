@@ -154,70 +154,19 @@ client = Client(base_url="https://agents.us.assemblyai.com")
 
 ## Quickstart
 
-Everything the platform needs from you arrives over HTTPS, because a phone or
-SIP call has no client on the line for it to ask. So an agent is a script that
-serves your own functions, plus a declaration pointing the platform at it.
-There is no service to write and no framework to choose.
+Runnable agents, a starter project and a Claude Code skill are in a separate
+repository, because they are files you clone and edit while this is a package
+you install:
 
-Pick the smallest shape that covers what you need. Copy the example rather than
-assembling one from scratch; each already handles the traps documented further
-down.
+**https://github.com/dan-ince-aai/assemblyai-agents-examples**
 
-| You want | Shape | Copy |
-| --- | --- | --- |
-| an agent that can look things up and act | tools only, the platform's model talks | `examples/tools_only_agent.py` |
-| control over what is said | your own replies (`llm=`) | `examples/one_file_agent.py` |
-| stages, cost control, or a stage that provably cannot do certain things | subagent routing | `examples/subagents.py` |
-| a project rather than a script | the starter kit | `examples/starter/` |
-
-`pip install` gives you the `assemblyai_agents` package, not the examples.
-Clone the repo to copy one, and take `expose.py` with it — every shape imports
-`public_address` from that file, and it is not part of the package.
-`examples/starter/` ships its own copy, so that directory stands alone.
-
-### Run one
-
-```bash
-export ASSEMBLYAI_API_KEY=...
-python examples/tools_only_agent.py
-```
-
-```text
-ngrok: https://a1bf-....ngrok-free.app -> http://127.0.0.1:8000
-created agent agent_7290244bd8c6439795598a1a04332dc0
-serving 'Ridgeway Hardware' on http://0.0.0.0:8000
-  [tool] check_stock(item='cordless drill') -> 4 in stock
-```
-
-Point a phone number at the agent id it prints and a real caller takes the
-identical path. Stop the script and the agent is still stored; the tunnel
-address is what goes away, so redeploy after restarting.
-
-### The three steps inside
+The shape they all share: an agent is a script that serves your own functions,
+plus a declaration pointing the platform at it. There is no service to write.
 
 ```python
-with public_address(PORT) as base_url:      # examples/expose.py: starts ngrok
-    agent = build(base_url)                 # tool URLs point back at this process
-    agent_id = deploy(agent)                # create, or update a stored id
-    serve(agent, reply=decide, port=PORT)   # blocks; the platform calls in
-```
-
-The order matters: the API resolves every tool hostname in public DNS when the
-agent is created, so the address has to exist first.
-
-### 1. Declare the agent
-
-`@tool` turns a plain function into a tool: the schema comes from the
-annotations and the description from the docstring, so there is no second copy
-of either to keep in step. `http=` is what makes it reachable from a phone
-call.
-
-```python
-import os
-from assemblyai_agents import VoiceAgent, tool
+from assemblyai_agents import Client, VoiceAgent, tool
 from assemblyai_agents.models.rest import HttpToolHeaderInput
-
-TOOL_SECRET = os.environ["TOOL_SECRET"]    # presented back to you on every call
+from assemblyai_agents.serving import claim_port, serve
 
 @tool(timeout_seconds=10)
 async def lookup_order(order_id: str) -> dict:
@@ -226,104 +175,40 @@ async def lookup_order(order_id: str) -> dict:
     Args:
         order_id: The order number the caller read out, like W004.
     """
-    return await orders.status(order_id)     # your database, your API, anything
+    return await orders.status(order_id)      # your database, your API, anything
 
 TOOLS = [lookup_order]
 
 def build(base_url: str) -> VoiceAgent:
-    """The declaration, with every tool pointed back at this process."""
-    auth = HttpToolHeaderInput(name="Authorization", value=f"Bearer {TOOL_SECRET}")
+    auth = HttpToolHeaderInput(name="Authorization", value=f"Bearer {SECRET}")
     return VoiceAgent(
         name="Pizza Line",
         voice="ivy",
-        system_prompt="""
-            You answer order-status questions for Pizza Palace.
-            Keep replies to one or two short sentences.
-            For any question about an order, call lookup_order and read back the
-            status and ETA.
-        """,
+        system_prompt="You answer order-status questions for Pizza Palace.",
         greeting="Pizza Palace, how can I help?",
-        tools=[
-            declared.hosted_at(f"{base_url}/tools/{declared.name}", headers=[auth])
-            for declared in TOOLS
-        ],
+        tools=[t.hosted_at(f"{base_url}/tools/{t.name}", headers=[auth]) for t in TOOLS],
     )
+
+claim_port(port=8000)                         # before the deploy, not after
+agent = build(PUBLIC_BASE_URL)                # a public HTTPS address
+agent_id = Client().agents.create(agent).id   # persist this and reuse it
+serve(agent, port=8000, tool_secret=SECRET)   # blocks; the platform calls in
 ```
 
-`http=` cannot be passed to `@tool` here, because a tunnel's address does not
-exist when the module is imported and that is when the decorator runs.
-`hosted_at` returns a **new** tool bound to an address and leaves the original
-alone, so `TOOLS` stays importable by tests and one run's tunnel cannot leak
-into a later declaration. With a fixed address a module-level `VoiceAgent` is
-fine; under a tunnel, write `build(base_url)`.
+`http=` cannot be passed to `@tool` when the address is a tunnel, because the
+decorator runs at import and the address does not exist yet. `hosted_at` returns
+a new tool bound to an address and leaves the original alone, so a module-level
+`TOOLS` stays importable by tests.
 
-`VoiceAgent` is a frozen declaration: every field maps onto the create request,
-and `build(url).to_request()` returns the exact model the SDK sends, so you can
-inspect or assert on it without touching the network. The system prompt is
-dedented and stripped, so an indented triple-quoted block is fine. Nothing in
-this module touches the network at import time, so tests can import it.
+`serve()` answers every route the platform will call, read off the declaration,
+on the standard library alone: `POST /tools/{name}` per tool, the reply
+endpoint when you pass `reply=`, a route per pre-connect request, webhook
+delivery and `/healthz`. `routes()` returns the same handlers as plain callables
+to mount into an application you already have.
 
-### 2. Serve it
-
-```python
-from assemblyai_agents.serving import serve
-
-serve(agent, port=8000, tool_secret=TOOL_SECRET)
-```
-
-`serve` reads the declaration and answers everything the platform sends:
-`POST /tools/{name}` for each `@tool` on it, a route per pre-connect request,
-`POST /v1/chat/completions` when you pass `reply=`, webhook delivery, and
-`/healthz`. It is standard library only. `Tool.invoke` runs the decorated
-function unchanged (sync handlers go to a thread), so the function you
-unit-test is the one the platform reaches.
-
-If the project already has an application, `routes(agent, ...)` returns the
-same handlers as plain callables to mount wherever you like.
-
-### 3. Deploy
-
-```python
-from assemblyai_agents import Client
-
-client = Client()
-deployed = client.agents.create(agent)
-print(deployed.id)
-```
-
-To change a deployed agent, edit the declaration and call
-`client.agents.update(deployed.id, agent)`. The update sends the whole
-declaration, because `PUT /v1/agents/{id}` replaces the stored agent rather
-than merging into it. Persist the id and reuse it; do not create a new agent on
-every run.
-
-### 4. Try it
-
-Call the number, and watch the tool calls and replies arrive in your terminal.
-That is the same path whether the caller is on a phone, on SIP, or in a
-browser, so there is nothing separate to test.
-
-To check a change without picking up the phone, `examples/starter/` has a
-rehearsal harness: it runs your reply logic and your tools in the platform's
-own loop, offline, in milliseconds. Its tests are whole calls, and they belong
-in CI.
-
-You can also talk to a deployed agent from a terminal with the `[audio]` extra
-installed, which needs no tunnel but only reaches tools that run in the client:
-
-```python
-import asyncio
-from assemblyai_agents import AgentConnection
-
-async def main():
-    conn = AgentConnection(agent_id=deployed.id)
-    conn.on_user_transcript(lambda text: print("you:  ", text))
-    conn.on_agent_transcript(lambda text: print("agent:", text))
-    async with conn:
-        await conn.run()   # until the session ends; Ctrl-C to hang up
-
-asyncio.run(main())
-```
+`claim_port()` fails before the deploy rather than after it. Deploying repoints
+the stored agent, so a port still held by an earlier run would otherwise leave a
+live agent whose tool URLs answer to nothing.
 
 ## Declaring tools
 
@@ -705,154 +590,11 @@ How you organise `decide` is up to you. The starter shows one way, as forty
 lines of ordered stages in its own file, because that is an opinion and
 opinions belong in an example rather than in the SDK.
 
-### Two shapes, and which to start with
+### Worked endpoints
 
-| | The platform's model talks | You decide every reply |
-| --- | --- | --- |
-| Declaration | tools only | tools plus `llm=` |
-| You write | `@tool` functions | `@tool` functions and `decide(turn)` |
-| Shaped by | the system prompt | your code |
-| Example | `examples/tools_only_agent.py` | `examples/one_file_agent.py` |
-
-Once you decide the replies, a third shape opens up:
-`examples/subagents.py` splits the call into stages and gives each its own
-model, prompt and tool list.
-
-Start with tools only. Move to your own replies when a prompt is not a strong
-enough guarantee: a disclosure that has to be read word for word, a fixed order
-of steps, an amount that must come from a ledger rather than from a sentence.
-Both are the same file underneath, and both serve their tools the same way.
-
-### One file, no backend
-
-Everything the platform needs from you arrives over HTTPS, and it has to: a
-phone call has no client on the other end to ask. So the shape to reach for is
-your own code, served, with a public address in front of it.
-
-`examples/one_file_agent.py` is that in one script. It declares tools whose
-bodies are ordinary Python, decides what to say in a plain function, deploys
-the agent, gets itself an address, and serves the platform's requests until you
-stop it:
-
-```bash
-export ASSEMBLYAI_API_KEY=...
-python examples/one_file_agent.py
-```
-
-```text
-ngrok: https://a1bf-....ngrok-free.app -> http://127.0.0.1:8000
-created agent agent_7290244bd8c6439795598a1a04332dc0
-serving 'Northwind order line' on http://0.0.0.0:8000
-POST /v1/chat/completions -> streaming
-  [tool] order_status("It's one zero four two.") -> 1042 found
-```
-
-Point a phone number at that agent id and a real caller gets the same code
-down the same path. `assemblyai_agents.serving.serve(agent, reply=decide)` is
-what answers: it takes the agent you already declared and serves each `@tool`
-on it, your reply function, your pre-connect handler and your webhooks. Nothing
-to install for it, and no service to write. If you would rather host the
-handlers in an application of your own, `routes()` from the same module returns
-them as plain callables.
-
-The address is the temporary part, and it is kept in one place.
-`examples/expose.py` starts ngrok when `PUBLIC_BASE_URL` is not already set,
-and it is a script in the examples rather than anything in the SDK on purpose.
-Nothing in `assemblyai_agents` knows a tunnel exists: an agent's tool URLs come
-from `PUBLIC_BASE_URL` and it does not care what put the value there. Set that
-to a staging host or a deployment and the tunnel is simply not used. When agent
-code can be deployed directly, that one function is what gets deleted.
-
-ngrok rather than cloudflared because one is enough, and cloudflared's quick
-tunnels can take minutes to resolve or never resolve at all. Swapping is a few
-lines in `expose.py`.
-
-### Subagents: a different model per stage
-
-A call is not one job. Checking who is on the line is narrow and scripted;
-talking someone through a booking is not; a complaint is different again. One
-model and one prompt means paying for the hardest turn on every turn.
-
-`examples/subagents.py` routes between stages, each with its own model, prompt
-and allowed tools:
-
-| Stage | Model | May call |
-| --- | --- | --- |
-| `authenticate` | `claude-haiku-4-5` | `verify_caller` |
-| `booking` | `claude-sonnet-4-6` | `find_appointments`, `book_appointment` |
-| `recovery` | `claude-opus-5` | `find_appointments`, `escalate` |
-| `wrap_up` | `claude-haiku-4-5` | nothing |
-
-A real call through it:
-
-```text
-[authenticate · claude-haiku-4-5] -> "Can you give me the four digit reference?"
-[authenticate · claude-haiku-4-5] -> verify_caller
-  [tool] verify_caller('4471', 'Maria Delgado') -> True
-[booking · claude-sonnet-4-6]     -> find_appointments
-[booking · claude-sonnet-4-6]     -> "We have Friday at nine, or Friday at half past eleven."
-[booking · claude-sonnet-4-6]     -> book_appointment
-[wrap_up · claude-haiku-4-5]      -> "You're all booked in. Your confirmation is R zero zero one."
-```
-
-Three things that example exists to make clear:
-
-- **Handing over is not a config change.** With `llm=` pointing at your code,
-  a handover is choosing a different model and prompt for the next turn.
-  Nothing is redeployed and the platform is not told. `session.update` can
-  change a live session, but it is a WebSocket message and a phone call has no
-  client to send one.
-- **The tool allowlist is yours to enforce.** The platform runs whatever tool
-  call it is handed, so `authenticate` cannot book an appointment because the
-  router refuses to pass such a call on. Each stage is also only *offered* its
-  own tools, so the model rarely tries.
-- **A subagent prompt replaces the platform's**, including the spoken-output
-  guidance it normally appends. Put that back yourself or a model writes for a
-  screen: the booking stage offered "**Friday at nine**", asterisks and all,
-  until it was told it was on a phone.
-
-Two smaller things, both found by a gateway refusing the request: the
-platform's spoken lines come back with a trailing space, which an assistant
-message may not end with, and prior tool calls cannot be forwarded to a
-subagent that was not given those tools. The example flattens tool history into
-plain notes, which sidesteps both and reads better anyway.
-
-### A starter you can run today
-
-`examples/starter/` is all of the above as a working agent: a mocked system of
-record, five tools, a staged reply engine, a model for the turns a script
-cannot cover, an offline rehearsal harness, fourteen whole-call tests, a
-scripted driver, and deploy. Copy it, rename it, and change four files.
-
-```bash
-cp -r examples/starter my-agent && cd my-agent
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python \
-    "git+https://github.com/dan-ince-aai/assemblyai-agents-python.git" \
-    fastapi "uvicorn[standard]" pytest pytest-asyncio httpx
-.venv/bin/python rehearse.py happy      # a whole call, offline
-.venv/bin/python -m pytest -q
-```
-
-`examples/one_file_agent.py` is the smaller version of the same idea, for
-reading in one sitting: tools and replies in one process, with a responder that
-is a few lines of plain Python. The platform cannot tell what is behind the
-schema, so a decision tree, an open-weights model you host, or a retrieval
-pipeline all work the same way.
-
-```bash
-python examples/one_file_agent.py   # replies, tools and webhooks in one process
-```
-
-On a call the platform then arrives three times per exchange: once to ask what
-to say, once to run the tool that answer asked for, and once more with the
-result.
-
-```text
-POST /v1/chat/completions -> streaming
-POST /tools/lookup_order     {"order_id": "W004"}
-POST /v1/chat/completions -> streaming
-```
+One file with tools and replies together, subagent routing with a different
+model per stage, and a starter project with an offline rehearsal harness are all
+in the examples repository: https://github.com/dan-ince-aai/assemblyai-agents-examples
 
 ### What the platform sends your endpoint
 
@@ -1087,24 +829,15 @@ method names. The realtime WebSocket (`sessions.connect`, `AgentConnection`) is
 async only. Both clients are context managers and release their connection
 pools on exit.
 
-## Using this SDK with Claude Code
+## Using this SDK with a coding agent
 
-This repository ships a [Claude Code](https://claude.com/claude-code) skill that
-teaches Claude how to build, deploy and test agents with this SDK. It is picked
-up automatically when you open this repository in Claude Code. To use it in your
-own project, copy the skill folder into that project (or into your user-level
-skills folder):
+The Claude Code skill and an `AGENTS.md` for other coding agents live with the
+examples, because they refer to those files by path:
 
 ```bash
-# into one project
-mkdir -p .claude/skills && cp -r /path/to/assemblyai-agents-python/.claude/skills/assemblyai-agents-sdk .claude/skills/
-
-# or for every project
-mkdir -p ~/.claude/skills && cp -r /path/to/assemblyai-agents-python/.claude/skills/assemblyai-agents-sdk ~/.claude/skills/
+git clone https://github.com/dan-ince-aai/assemblyai-agents-examples.git
+cp -r assemblyai-agents-examples/.claude/skills/assemblyai-agents-sdk ~/.claude/skills/
 ```
-
-Then ask, for example, *"build a voice agent that takes dental appointment
-bookings and checks availability against our API"*.
 
 ## Development
 

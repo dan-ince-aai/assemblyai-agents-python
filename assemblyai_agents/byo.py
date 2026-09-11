@@ -23,7 +23,7 @@ is yours; there is no framework here.
     turn = Turn.from_request(body)
     return StreamingResponse(stream(turn, decide(turn)), media_type="text/event-stream")
 
-`examples/starter/` builds a whole agent on this, including one way of
+The examples repository builds whole agents on this, including one way of
 organising `decide` as ordered stages. That organisation is an opinion, so it
 lives in the example rather than here.
 """
