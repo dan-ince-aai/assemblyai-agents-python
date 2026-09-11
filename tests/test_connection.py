@@ -13,7 +13,7 @@ from assemblyai_agents import connection as connection_mod
 # reached through the module; AssemblyAIAgentsError (its base) is the exported
 # name a caller can actually catch it by.
 from assemblyai_agents.audio_io import DeviceAudioError
-from assemblyai_agents.connection import AgentConnection, ToolRouter
+from assemblyai_agents.connection import AgentConnection
 from assemblyai_agents.models.ws import (
     InputSpeechStarted,
     ReplyAudio,
@@ -231,7 +231,7 @@ def _quiet_mic(monkeypatch) -> None:
     monkeypatch.setattr(connection_mod, "microphone_stream", _healthy_mic)
 
 
-def _make_agent(events, *, audio=True, sink=None, tools=None, **kwargs):
+def _make_agent(events, *, audio=True, sink=None, **kwargs):
     """Build an AgentConnection over a FakeClient/FakeSession.
 
     When audio=True and a `sink` is given, inject it so run() forwards events to
@@ -245,7 +245,6 @@ def _make_agent(events, *, audio=True, sink=None, tools=None, **kwargs):
         agent_id=AGENT_ID,
         client=client,
         audio=audio,
-        tools=tools,
         **kwargs,
     )
     return agent, client, session, sink
@@ -349,46 +348,6 @@ async def test_run_flushes_on_barge_in(monkeypatch):
     assert sink.aclose_calls == 1
 
 
-# --------------------------------------------------------------------------- #
-# 5. tool call → handler(**args) → send_tool_result; raise/unknown → is_error #
-# --------------------------------------------------------------------------- #
-async def test_run_routes_tool_call_and_replies():
-    seen = {}
-
-    async def get_order(a):
-        seen["a"] = a
-        return "order-OK"
-
-    def boom():
-        raise RuntimeError("handler exploded")
-
-    events = [
-        ToolCall(name="get_order", call_id="c1", arguments={"a": 1}),
-        ToolCall(name="boom", call_id="c2", arguments={}),
-        ToolCall(name="nope", call_id="c3", arguments={}),
-        SessionEnded(session_duration_seconds=1.0),
-    ]
-    agent, client, session, _ = _make_agent(
-        events, audio=False, tools={"get_order": get_order, "boom": boom}
-    )
-
-    async with agent:
-        await agent.run()
-
-    by_id = {r["call_id"]: r for r in session.tool_results}
-
-    # registered handler invoked with splatted arguments, result replied (ok).
-    assert seen == {"a": 1}, "handler must be called with **arguments"
-    assert by_id["c1"]["is_error"] is False
-    assert "order-OK" in str(by_id["c1"]["result"])
-
-    # handler that raises -> error tool-result, no exception out of run().
-    assert by_id["c2"]["is_error"] is True
-    assert str(by_id["c2"]["result"])  # non-empty message
-
-    # unregistered name -> error tool-result, never an unhandled exception.
-    assert by_id["c3"]["is_error"] is True
-    assert str(by_id["c3"]["result"])
 
 
 # --------------------------------------------------------------------------- #
@@ -725,28 +684,3 @@ async def test_healthy_mic_does_not_disturb_the_run(monkeypatch):
     assert sink.aclose_calls == 1
 
 
-# --------------------------------------------------------------------------- #
-# ToolRouter unit (backs criterion 5; the single-homed dispatch primitive)    #
-# --------------------------------------------------------------------------- #
-async def test_tool_router_handle_dispatches_and_errors():
-    calls = {}
-
-    async def ok(x):
-        calls["x"] = x
-        return "done"
-
-    router = ToolRouter({"ok": ok})
-    session = FakeSession([])
-
-    await router.handle(ToolCall(name="ok", call_id="c1", arguments={"x": 7}), session)
-    assert calls == {"x": 7}
-    assert session.tool_results[0]["call_id"] == "c1"
-    assert session.tool_results[0]["is_error"] is False
-
-    # add() + unknown-name path, and a non-ToolCall event is ignored.
-    await router.handle(ToolCall(name="missing", call_id="c2", arguments={}), session)
-    assert session.tool_results[1]["is_error"] is True
-
-    pre = len(session.tool_results)
-    await router.handle(TranscriptUser(item_id="u1", text="x"), session)
-    assert len(session.tool_results) == pre, "non-ToolCall events are ignored"

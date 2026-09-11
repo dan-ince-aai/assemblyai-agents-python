@@ -266,3 +266,55 @@ def test_a_capture_name_reused_inside_one_entry_is_refused():
         )
 
     assert "customer_tier" in str(exc_info.value)
+
+
+# --------------------------------------------------------------------------- a handler this process serves
+
+
+def _lookup(payload: dict) -> dict:
+    return {"matched": True}
+
+
+def test_a_pre_connect_handler_is_served_at_a_path_named_after_it():
+    entry = PreConnectRequest(handler=_lookup)
+    assert entry.url is None
+    assert entry.path == "/pre-connect/_lookup"
+
+
+def test_a_pre_connect_request_needs_a_handler_or_a_url():
+    with pytest.raises(ConfigurationError, match="`handler=`.*or `url=`"):
+        PreConnectRequest(returns=[Captured(name="tier", path="customer.tier")])
+
+
+def test_a_pre_connect_handler_must_be_callable():
+    with pytest.raises(ConfigurationError, match="not callable"):
+        PreConnectRequest(handler="lookup")
+
+
+def test_binding_a_handler_fills_the_url_and_the_bearer():
+    entry = PreConnectRequest(handler=_lookup, allow_overrides=True)
+    bound = entry.hosted_at("https://agent.example.com/", secret="s3cret")
+    assert bound.url == "https://agent.example.com/pre-connect/_lookup"
+    assert bound.handler is _lookup
+    assert [(h.name, h.value) for h in bound.headers] == [("Authorization", "Bearer s3cret")]
+    wire = bound.to_request()
+    assert wire.http.url == bound.url
+    assert wire.allow_overrides == ["greeting"]
+    # The original is untouched.
+    assert entry.url is None and entry.headers is None
+
+
+def test_binding_keeps_an_authorization_header_you_set_yourself():
+    entry = PreConnectRequest(handler=_lookup, headers=[Header(name="Authorization", value="Bearer mine")])
+    bound = entry.hosted_at("https://agent.example.com", secret="s3cret")
+    assert [h.value for h in bound.headers] == ["Bearer mine"]
+
+
+def test_binding_a_url_entry_is_a_no_op():
+    entry = PreConnectRequest(url="https://crm.example.com/whois")
+    assert entry.hosted_at("https://agent.example.com", secret="s3cret") is entry
+
+
+def test_an_unbound_handler_cannot_go_on_the_wire():
+    with pytest.raises(ConfigurationError, match="no address yet"):
+        PreConnectRequest(handler=_lookup).to_request()

@@ -231,35 +231,6 @@ def test_phone_numbers_assign_agent_returns_none(make_client, recorder: Recorder
     assert recorder.header(HEADER) is None
 
 
-def test_phone_numbers_assign_agent_refuses_a_local_client_resident_tool(
-    make_client, recorder: Recorder
-):
-    # A client-resident tool is resolved over the WebSocket, and the telephony
-    # transport has no such resolver — the model is still offered the tool and
-    # the call waits out its whole timeout on a future nothing can complete.
-    @tool
-    async def lookup_order(order_id: str) -> dict:
-        """Look up one of the caller's orders by its ID."""
-        return {}
-
-    agent = VoiceAgent(
-        name="Pizza Line",
-        voice="ivy",
-        system_prompt="Take orders.",
-        tools=[lookup_order],
-    )
-    client = make_client([(200, None, None)], recorder)
-
-    with pytest.raises(ConfigurationError) as exc_info:
-        client.phone_numbers.assign_agent(
-            _NUMBER, PhoneNumberAssignAgentRequest(agent_id="agt_1"), agent=agent
-        )
-
-    assert "lookup_order" in str(exc_info.value)
-    # Refused before the request went out.
-    assert recorder.count == 0
-
-
 def test_phone_numbers_assign_agent_allows_a_local_agent_with_only_http_tools(
     make_client, recorder: Recorder
 ):

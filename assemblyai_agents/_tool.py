@@ -3,6 +3,7 @@ import dataclasses
 import functools
 import inspect
 import re
+import warnings
 from dataclasses import dataclass
 from types import UnionType
 from typing import (
@@ -121,6 +122,16 @@ class Tool:
     def target(self) -> Callable:
         return self._spec.target
 
+    @property
+    def hosted(self) -> bool:
+        """True when this process serves the tool.
+
+        A tool declared without ``url=`` is hosted here: ``serve()`` answers
+        ``POST /tools/{name}`` and the deploy binds that address onto the
+        declaration. ``url=`` points the platform at a service you already run.
+        """
+        return self._spec.http is None
+
     def definition(self) -> PlaintextToolDefinition:
         spec = self._spec
         return PlaintextToolDefinition(
@@ -146,18 +157,13 @@ class Tool:
         http_method: Any = None,
         headers: Optional[list] = None,
     ) -> "Tool":
-        """The same tool, pointed at an address the platform can reach.
+        """The same tool, pointed at one specific address.
 
-        A tunnel's address does not exist when the module is imported, so an
-        `http=` passed to `@tool` cannot carry one. Build the declaration in a
-        function that takes the address and bind the tools there:
+        ``VoiceAgent.hosted_at()`` calls this for every hosted tool when the
+        declaration is bound to an address, so you rarely need it. Reach for it
+        to point a single tool somewhere other than this process.
 
-            tools = [declared.hosted_at(f"{base_url}/tools/{declared.name}",
-                                        headers=[auth]) for declared in TOOLS]
-
-        A new `Tool` comes back and the original is untouched, so the module
-        level list stays importable by tests and one address cannot leak into
-        another declaration.
+        A new `Tool` comes back and the original is untouched.
         """
         if not url.startswith("https://") and not url.startswith("http://"):
             raise ConfigurationError(
@@ -191,9 +197,45 @@ def tool(
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     execution_mode: Optional[ExecutionMode] = None,
     response_instructions: Optional[ResponseInstructions] = None,
-    http: Optional[PlaintextHttpToolConfig] = None,
     dtmf_collected_arguments: Optional[list[DtmfCollectionProfile]] = None,
+    url: Optional[str] = None,
+    http_method: Any = None,
+    headers: Optional[list] = None,
+    http: Optional[PlaintextHttpToolConfig] = None,
 ) -> Any:
+    """Declare a tool.
+
+    Bare, the tool is hosted by this process: ``serve()`` answers it and the
+    deploy points the platform at it. Pass ``url=`` (with ``http_method=`` and
+    ``headers=`` as needed) to have the platform call a service you already
+    run instead. ``http=`` is the deprecated spelling of the same thing.
+    """
+    if http is not None:
+        warnings.warn(
+            "@tool(http=...) is deprecated. Leave it out to have this process host "
+            "the tool, or pass url= (and http_method=, headers=) for an external "
+            "service.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    elif url is not None:
+        if not url.startswith("https://") and not url.startswith("http://"):
+            raise ConfigurationError(
+                f"@tool(url={url!r}) is not an http(s) URL. The platform fetches this "
+                f"address itself, so it has to be one it can reach."
+            )
+        http = PlaintextHttpToolConfig(
+            url=url,
+            http_method=http_method or HttpMethod.POST,
+            headers=list(headers) if headers else None,
+        )
+    elif http_method is not None or headers is not None:
+        raise ConfigurationError(
+            "@tool(http_method=..., headers=...) only make sense with url=. A tool "
+            "without url= is hosted by this process, and its method and auth header "
+            "are set when the declaration is bound to an address."
+        )
+
     def decorate(target: Callable) -> Tool:
         return _declare(
             target,

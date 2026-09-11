@@ -1,6 +1,6 @@
 import asyncio
 import inspect
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Optional
 
 from websockets.exceptions import ConnectionClosed
 
@@ -26,39 +26,16 @@ async def _maybe_await(result: Any) -> Any:
     return result
 
 
-class ToolRouter:
-    def __init__(self, mapping: Optional[Mapping[str, Callable]] = None) -> None:
-        self._handlers: dict[str, Callable] = dict(mapping or {})
-
-    def add(self, name: str, fn: Callable) -> None:
-        self._handlers[name] = fn
-
-    async def handle(self, event: Any, session: AsyncRealtimeSession) -> None:
-        if not isinstance(event, ToolCall):
-            return
-        handler = self._handlers.get(event.name)
-        if handler is None:
-            await session.send_tool_result(
-                event.call_id,
-                f"no handler registered for tool {event.name!r}",
-                is_error=True,
-            )
-            return
-        try:
-            result = await _maybe_await(handler(**(event.arguments or {})))
-        except Exception as exc:
-            await session.send_tool_result(event.call_id, str(exc), is_error=True)
-            return
-        await session.send_tool_result(event.call_id, str(result))
-
-
 class AgentConnection:
     """A live connection to an already-deployed agent, keyed by ``agent_id``.
 
-    This is a connection driver, not a declaration: it mints a token, opens the
-    WebSocket, binds the deployed agent with ``session.update(agent_id=...)``
-    and owns the run loop. The agent's own name, prompt, greeting and voice live
-    server-side on that record and are not configured here.
+    A test client: the microphone and speaker end of a call, for talking to an
+    agent from a terminal or building your own audio transport. It mints a
+    token, opens the WebSocket, binds the deployed agent with
+    ``session.update(agent_id=...)`` and owns the run loop. Nothing about the
+    agent is configured here, and no tool runs here — tools are served over
+    HTTPS by the process that declared them, on a phone call and a WebSocket
+    session alike.
     """
 
     def __init__(
@@ -67,7 +44,6 @@ class AgentConnection:
         agent_id: str,
         api_key: Optional[str] = None,
         client: Optional[AsyncClient] = None,
-        tools: Optional[Mapping[str, Callable]] = None,
         audio: bool = True,
         auto_resume: bool = True,
         url: Optional[str] = None,
@@ -78,7 +54,6 @@ class AgentConnection:
         # None when audio=False (BYO transport); the run loop branches on this and
         # the tests inject a fake sink onto this exact attribute.
         self._sink: Optional[PlaybackSink] = PlaybackSink() if audio else None
-        self._tools = ToolRouter(tools or {})
         self._auto_resume = auto_resume
         self._url = url
         self._token = token
@@ -123,13 +98,6 @@ class AgentConnection:
 
     def on_error(self, fn: Callable) -> Callable:
         return self._register("error", fn)
-
-    def tool(self, name: str) -> Callable[[Callable], Callable]:
-        def _decorator(fn: Callable) -> Callable:
-            self._tools.add(name, fn)
-            return fn
-
-        return _decorator
 
     async def __aenter__(self) -> "AgentConnection":
         # Mint a short-lived session token instead of letting connect fall back to
@@ -244,7 +212,17 @@ class AgentConnection:
                     self._sink.handle(event)
                 elif isinstance(event, ReplyAudio):
                     await self._fan_out("agent_audio", event)
-                await self._tools.handle(event, self._session)
+                if isinstance(event, ToolCall):
+                    # Every tool on a declaration is served over HTTPS by the
+                    # process that declared it, so the platform runs tools itself
+                    # and this client is never asked. Answer a stray one honestly
+                    # rather than letting the call wait out the tool's timeout.
+                    await self._session.send_tool_result(
+                        event.call_id,
+                        f"tool {event.name!r} is not served by this client; declare it "
+                        f"on the agent so the platform calls it over HTTPS",
+                        is_error=True,
+                    )
                 await self._dispatch(event)
                 if isinstance(event, SessionEnded):
                     break

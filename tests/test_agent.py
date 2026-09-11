@@ -12,6 +12,7 @@ from assemblyai_agents import (
 from assemblyai_agents.models.rest import (
     AgentCreateRequest,
     AgentUpdateRequest,
+    HttpToolHeaderInput,
     LlmConfigRequest,
     VoiceConfig,
 )
@@ -51,46 +52,56 @@ def test_a_single_llm_config_becomes_the_one_element_list_the_wire_takes():
         base_url="https://api.openai.com/v1", model="gpt-4o-mini", api_key="k"
     )
 
-    request = VoiceAgent(
-        name="Pizza Line", voice="ivy", system_prompt=PROMPT, llm=llm
-    ).to_request()
+    with pytest.warns(DeprecationWarning):
+        request = VoiceAgent(
+            name="Pizza Line", voice="alba", system_prompt=PROMPT, llm=llm
+        ).to_request()
 
     assert request.llm == [llm]
 
 
 def test_a_fully_populated_declaration_builds_the_wire_model_exactly():
-    llm = LlmConfigRequest(
-        base_url="https://api.openai.com/v1", model="gpt-4o-mini", api_key="k"
-    )
     lookup_order = declare_lookup_order()
+
+    def decide(turn):
+        return None
 
     agent = VoiceAgent(
         name="Pizza Line",
-        voice="ivy",
+        voice="alba",
         system_prompt=PROMPT,
         greeting="Pizza Palace — what can I get you?",
-        llm=llm,
+        reply=decide,
         input=AudioInput(
             format=AudioFormat(encoding="audio/pcm", sample_rate=24000),
             keyterms=["margherita", "calzone"],
         ),
         output=AudioOutput(volume=90.0),
         tools=[lookup_order],
+        public_url="https://agent.example.com",
+        secret="k",
     )
 
+    auth = [HttpToolHeaderInput(name="Authorization", value="Bearer k")]
     assert agent.to_request() == AgentCreateRequest(
         name="Pizza Line",
         system_prompt=PROMPT,
         greeting="Pizza Palace — what can I get you?",
-        voice=VoiceConfig(voice_id="ivy"),
+        voice=VoiceConfig(voice_id="alba"),
         input={
             "type": "audio",
             "format": {"encoding": "audio/pcm", "sample_rate": 24000},
             "keyterms": ["margherita", "calzone"],
         },
         output={"type": "audio", "volume": 90.0},
-        tools=[lookup_order.definition()],
-        llm=[llm],
+        # The bare tool is hosted here, so it goes out pointed at this process.
+        tools=[
+            lookup_order.hosted_at(
+                "https://agent.example.com/tools/lookup_order", headers=auth
+            ).definition()
+        ],
+        # `reply=` is the one-element llm list pointing back at this process.
+        llm=[LlmConfigRequest(base_url="https://agent.example.com/v1", model="pizza-line", api_key="k")],
     )
 
 
@@ -98,11 +109,95 @@ def test_the_declaration_carries_the_tools_it_was_given():
     lookup_order = declare_lookup_order()
 
     agent = VoiceAgent(
-        name="Pizza Line", voice="ivy", system_prompt=PROMPT, tools=[lookup_order]
+        name="Pizza Line", voice="alba", system_prompt=PROMPT, tools=[lookup_order]
     )
 
     assert agent.tools == [lookup_order]
-    assert agent.to_request().tools[0].name == "lookup_order"
+    assert agent.hosted_tool_names() == ("lookup_order",)
+    bound = agent.hosted_at("https://agent.example.com")
+    assert bound.to_request().tools[0].name == "lookup_order"
+    assert bound.to_request().tools[0].http.url == "https://agent.example.com/tools/lookup_order"
+
+
+def test_a_hosted_tool_needs_an_address_before_it_can_go_on_the_wire():
+    # A bare tool is served by this process, and the platform has to be told
+    # where that is. Refusing here beats a 422 after the round trip.
+    agent = VoiceAgent(
+        name="Pizza Line", voice="alba", system_prompt=PROMPT, tools=[declare_lookup_order()]
+    )
+    assert agent.needs_address is True
+    with pytest.raises(ConfigurationError, match="hosted tools \\(`lookup_order`\\).*PUBLIC_BASE_URL"):
+        agent.to_request()
+
+
+def test_an_external_tool_needs_no_address():
+    @tool(url="https://api.example.com/weather")
+    def weather(city: str) -> dict:
+        """Weather for a city."""
+        return {}
+
+    agent = VoiceAgent(name="Pizza Line", voice="alba", system_prompt=PROMPT, tools=[weather])
+    assert agent.needs_address is False
+    assert agent.to_request().tools[0].http.url == "https://api.example.com/weather"
+
+
+def test_reply_becomes_the_llm_list_pointing_at_this_process():
+    agent = VoiceAgent(
+        name="Pizza Line", voice="alba", system_prompt=PROMPT, reply=lambda turn: None,
+        public_url="https://agent.example.com/", secret="k",
+    )
+    assert agent.hosts_replies is True
+    assert agent.public_url == "https://agent.example.com"          # trailing slash dropped
+    assert agent.to_request().llm == [
+        LlmConfigRequest(base_url="https://agent.example.com/v1", model="pizza-line", api_key="k")
+    ]
+
+
+def test_no_reply_means_the_platforms_model_talks():
+    agent = VoiceAgent(name="Pizza Line", voice="alba", system_prompt=PROMPT)
+    assert agent.hosts_replies is False
+    assert agent.needs_address is False
+    assert agent.to_request().llm is None
+
+
+def test_reply_and_llm_together_are_refused():
+    with pytest.raises(ConfigurationError, match="two modes"):
+        VoiceAgent(
+            name="Pizza Line", voice="alba", system_prompt=PROMPT, reply=lambda turn: None,
+            llm=LlmConfigRequest(base_url="https://api.openai.com/v1", model="m", api_key="k"),
+        )
+
+
+def test_llm_is_deprecated_but_still_goes_on_the_wire():
+    llm = LlmConfigRequest(base_url="https://api.openai.com/v1", model="m", api_key="k")
+    with pytest.warns(DeprecationWarning, match="llm=.*deprecated"):
+        agent = VoiceAgent(name="Pizza Line", voice="alba", system_prompt=PROMPT, llm=llm)
+    assert agent.to_request().llm == [llm]
+
+
+def test_a_reply_that_is_not_callable_is_refused():
+    with pytest.raises(ConfigurationError, match="not callable"):
+        VoiceAgent(name="Pizza Line", voice="alba", system_prompt=PROMPT, reply="decide")
+
+
+def test_a_public_url_that_is_not_https_is_refused():
+    with pytest.raises(ConfigurationError, match="not https"):
+        VoiceAgent(name="Pizza Line", voice="alba", system_prompt=PROMPT, public_url="http://x")
+
+
+def test_the_secret_never_appears_in_the_repr():
+    agent = VoiceAgent(
+        name="Pizza Line", voice="alba", system_prompt=PROMPT, public_url="https://x.example.com", secret="s3cret"
+    )
+    assert "s3cret" not in repr(agent)
+
+
+def test_hosted_at_returns_a_bound_copy_and_leaves_the_original_alone():
+    agent = VoiceAgent(name="Pizza Line", voice="alba", system_prompt=PROMPT, tools=[declare_lookup_order()])
+    bound = agent.hosted_at("https://agent.example.com", secret="k")
+    assert bound.public_url == "https://agent.example.com" and bound.secret == "k"
+    assert agent.public_url is None and agent.secret is None
+    assert bound.tools == agent.tools                      # the declaration itself is shared
 
 
 def test_two_tools_under_one_name_are_refused():
