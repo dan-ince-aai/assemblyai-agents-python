@@ -158,12 +158,15 @@ class PreConnectRequest:
     the one thing a pre-connect endpoint can do to stop a conversation.
 
     **The platform's own call facts are sent only when named.**
-    ``caller_number``, ``dialed_number``, ``direction``, ``agent_id`` and
-    ``session_id`` need no earlier capture, but they are opt-in per request:
-    an entry that names none of them sends nothing. A fact the platform does
-    not have — empty, or a carrier placeholder such as ``anonymous`` — is left
-    out of the payload rather than sent blank, so the ``default`` declared for
-    that name applies instead.
+    ``caller_number``, ``dialed_number``, ``direction`` (``"inbound"`` or
+    ``"outbound"``), ``agent_id`` and ``session_id`` need no earlier capture,
+    but they are opt-in per request: an entry that names none of them sends
+    nothing. A fact the platform does not have — empty, or a carrier
+    placeholder such as ``anonymous`` — is left out of the payload rather than
+    sent blank, so the ``default`` declared for that name applies instead. A
+    name an earlier entry captured wins over the platform's value, so a
+    ``Captured`` carrying a ``default`` is how to guarantee the key is always
+    present.
 
     ``allow_overrides`` is a flag rather than a list because the wire field's
     vocabulary is closed and holds one value, ``greeting``.
