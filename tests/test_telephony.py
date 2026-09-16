@@ -240,6 +240,82 @@ def test_a_sends_name_produced_by_an_earlier_entry_is_accepted():
     assert built.pre_connect_requests[1].sends == ["customer_tier"]
 
 
+def test_a_first_entry_may_send_a_platform_call_fact():
+    # The platform supplies the call facts, so a first entry needs no earlier
+    # capture to have something to send. Before this was allowed, a first entry
+    # could declare nothing and the endpoint was called with an empty body.
+    agent(pre_connect=[whois(sends=["dialed_number"])])
+
+
+@pytest.mark.parametrize(
+    "fact",
+    ["caller_number", "dialed_number", "direction", "agent_id", "session_id"],
+)
+def test_every_platform_call_fact_is_accepted_on_a_first_entry(fact):
+    built = agent(pre_connect=[whois(sends=[fact])]).to_request()
+
+    assert built.pre_connect_requests[0].sends == [fact]
+
+
+def test_a_sends_name_that_is_neither_a_call_fact_nor_captured_is_refused():
+    with pytest.raises(ConfigurationError) as exc_info:
+        agent(pre_connect=[whois(sends=["caller_mood"])])
+
+    message = str(exc_info.value)
+    assert "caller_mood" in message
+    assert "earlier" in message
+    assert "dialed_number" in message
+
+
+def test_a_captured_name_and_a_call_fact_resolve_together():
+    first = PreConnectRequest(
+        url="https://example.com/tier",
+        returns=[Captured(name="customer_tier", path="customer.tier")],
+    )
+    second = whois(sends=["customer_tier", "caller_number"])
+
+    built = agent(pre_connect=[first, second]).to_request()
+
+    assert built.pre_connect_requests[1].sends == ["customer_tier", "caller_number"]
+
+
+def test_the_declared_call_facts_reach_the_wire_model_unchanged():
+    entry = whois(sends=["caller_number", "dialed_number", "direction"])
+
+    assert entry.to_request().sends == ["caller_number", "dialed_number", "direction"]
+
+
+def test_a_capture_named_after_a_call_fact_is_not_a_duplicate():
+    # A live production agent declares a `caller_number` capture exactly like
+    # this, so treating a call fact as an already-taken capture name breaks it.
+    built = agent(
+        pre_connect=[whois(returns=[Captured(name="caller_number", path="caller.id")])]
+    ).to_request()
+
+    assert built.pre_connect_requests[0].returns[0].name == "caller_number"
+
+
+def test_a_capture_name_declared_twice_is_still_refused():
+    first = PreConnectRequest(
+        url="https://example.com/tier",
+        returns=[Captured(name="caller_number", path="caller.id")],
+    )
+    second = PreConnectRequest(
+        url="https://example.com/whois",
+        returns=[Captured(name="caller_number", path="whois.caller")],
+    )
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        agent(pre_connect=[first, second])
+
+    assert "declared twice" in str(exc_info.value)
+
+
+def test_an_entry_that_names_nothing_sends_nothing():
+    # Sending is opt-in per request: no `sends`, no payload names.
+    assert whois().to_request().sends is None
+
+
 def test_a_capture_name_reused_across_entries_is_refused():
     first = PreConnectRequest(
         url="https://example.com/tier",

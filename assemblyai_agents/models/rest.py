@@ -889,7 +889,7 @@ class PlaintextPreConnectRequest(BaseModel):
     )
     sends: list[str] | None = Field(
         None,
-        description="Names captured by an earlier entry's `returns`, sent to this endpoint. Entries run in order, so only an earlier entry's names are resolvable.",
+        description="Names sent to this endpoint: names captured by an earlier entry's `returns`, and the call facts the platform supplies — `caller_number`, `dialed_number`, `direction` (`inbound` or `outbound`), `agent_id`, `session_id`. Entries run in order, so only an earlier entry's captured names are resolvable; a call fact needs no earlier entry. Sending is opt-in per request, so an entry that names nothing sends nothing, and a call fact the platform does not have is omitted from the payload rather than sent blank, so the `default` declared for that name applies.",
         examples=[['customer_tier']],
         title='Sends',
     )
