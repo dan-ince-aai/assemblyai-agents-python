@@ -21,6 +21,14 @@ MIN_PRE_CONNECT_TIMEOUT_MS = 1
 MAX_PRE_CONNECT_TIMEOUT_MS = 800
 MAX_PRE_CONNECT_REQUESTS = 2
 
+# Facts about the call itself that the platform supplies. Any entry may name
+# these in `sends` without an earlier entry having captured them. They are not
+# captures, so `validate_pre_connect` keeps them out of the set it checks for
+# duplicate `returns` names.
+CALL_FACTS = frozenset(
+    {"caller_number", "dialed_number", "direction", "agent_id", "session_id"}
+)
+
 # The only member of `allow_overrides`'s closed vocabulary, which is why the
 # field is a flag here rather than a list.
 GREETING_OVERRIDE = "greeting"
@@ -134,7 +142,7 @@ class Captured:
 class PreConnectRequest:
     """One HTTPS call made before the conversation starts.
 
-    Three behaviours are not in the wire model and will surprise anyone who
+    Four behaviours are not in the wire model and will surprise anyone who
     assumes otherwise.
 
     **Pre-connect fails open on every error.**
@@ -148,6 +156,17 @@ class PreConnectRequest:
 
     **A top-level ``reject: true`` in the response aborts the call.** That is
     the one thing a pre-connect endpoint can do to stop a conversation.
+
+    **The platform's own call facts are sent only when named.**
+    ``caller_number``, ``dialed_number``, ``direction`` (``"inbound"`` or
+    ``"outbound"``), ``agent_id`` and ``session_id`` need no earlier capture,
+    but they are opt-in per request: an entry that names none of them sends
+    nothing. A fact the platform does not have — empty, or a carrier
+    placeholder such as ``anonymous`` — is left out of the payload rather than
+    sent blank, so the ``default`` declared for that name applies instead. A
+    name an earlier entry captured wins over the platform's value, so a
+    ``Captured`` carrying a ``default`` is how to guarantee the key is always
+    present.
 
     ``allow_overrides`` is a flag rather than a list because the wire field's
     vocabulary is closed and holds one value, ``greeting``.
@@ -225,17 +244,25 @@ def validate_pre_connect(entries: Optional[list[PreConnectRequest]]) -> None:
             f"{len(entries)} pre-connect requests are declared; the API accepts at "
             f"most {MAX_PRE_CONNECT_REQUESTS}."
         )
+    # `resolvable` tracks captures alone; `sendable` additionally admits the
+    # platform's call facts. Keeping them apart is what lets a capture be named
+    # after a call fact without reading as a duplicate — the server splits the
+    # two sets the same way, for the same reason.
     resolvable: set = set()
     for entry in entries:
-        # Entries run in order, so a name is only resolvable once an *earlier*
-        # entry has captured it. The server enforces the same ordering rule.
+        sendable = CALL_FACTS | resolvable
+        # A platform call fact is sendable anywhere. Anything else is only
+        # sendable once an *earlier* entry has captured it, because entries
+        # run in order. The server enforces the same ordering rule.
         for name in entry.sends or ():
-            if name in resolvable:
+            if name in sendable:
                 continue
             raise ConfigurationError(
-                f"pre-connect url={entry.url!r} sends `{name}`, which no earlier "
-                f"entry captures. Entries run in order, so only a name returned by "
-                f"an earlier one is resolvable."
+                f"pre-connect url={entry.url!r} sends `{name}`, which is neither a "
+                f"call fact the platform supplies nor a name an earlier entry "
+                f"captures. Entries run in order, so only a name returned by an "
+                f"earlier one is resolvable. The call facts, which any entry may "
+                f"send, are {', '.join(sorted(CALL_FACTS))}."
             )
         for name in entry.captured_names():
             if name in resolvable:
