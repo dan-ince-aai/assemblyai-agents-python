@@ -238,3 +238,57 @@ def test_the_same_action_is_available_as_a_plain_body():
 
     called = json_body(turn, call_tool("do_thing", id="7"))
     assert called["choices"][0]["finish_reason"] == "tool_calls"
+
+# --------------------------------------------------------------------------- speaking over a tool
+
+
+def _turn():
+    return Turn.from_request(request([{"role": "user", "content": "what is my balance"}]))
+
+
+def _deltas(frames):
+    """Every (delta, finish_reason) in the response. The usage frame carries no
+    choices, so it is skipped rather than indexed into."""
+    out = []
+    for frame in frames:
+        payload = frame[len("data: ") :].strip()
+        if payload == "[DONE]":
+            continue
+        choices = json.loads(payload).get("choices") or []
+        if not choices:
+            continue
+        out.append((choices[0].get("delta") or {}, choices[0].get("finish_reason")))
+    return out
+
+
+def test_a_bare_call_still_says_nothing():
+    """The default is unchanged: a tool call on its own speaks no words."""
+    frames = list(stream(_turn(), call_tool("check_balance", account="1")))
+
+    assert not any(d.get("content") for d, _ in _deltas(frames))
+
+
+def test_the_call_goes_out_before_the_words():
+    """The tool's clock starts on the first frame. Emitting the words first
+    would spend the whole spoken line before the platform has the call."""
+    frames = list(stream(_turn(), call_tool("check_balance", saying="One moment.", account="1")))
+    deltas = _deltas(frames)
+
+    assert deltas[0][0].get("tool_calls"), "the tool call is not the first frame"
+    assert "".join(d.get("content") or "" for d, _ in deltas).strip() == "One moment."
+
+
+def test_the_response_still_finishes_as_a_tool_call():
+    """The words are carried by a response whose reason is `tool_calls`; a
+    `stop` here would end the turn instead of running the tool."""
+    frames = list(stream(_turn(), call_tool("check_balance", saying="One moment.", account="1")))
+
+    assert [r for _, r in _deltas(frames) if r] == ["tool_calls"]
+
+
+def test_saying_is_the_spoken_line_not_a_tool_argument():
+    """The one shape this changes: `saying` is keyword-only on `call_tool`, so a
+    tool whose own argument is named `saying` no longer receives it. Build the
+    `Call` directly if you need that, which also skips `established()`."""
+    assert call_tool("t", saying="One moment.", account="1").arguments == {"account": "1"}
+    assert Call("t", {"saying": "a value"}).saying is None
