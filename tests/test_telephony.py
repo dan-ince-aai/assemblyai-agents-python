@@ -208,6 +208,32 @@ def test_allow_overrides_is_a_flag_not_a_list():
     assert "allow_overrides" in str(exc_info.value)
 
 
+def test_a_pre_connect_request_continues_on_a_failure_unless_told_otherwise():
+    assert whois().on_failure == "continue"
+    assert whois().to_request().on_failure == "continue"
+
+
+@pytest.mark.parametrize("on_failure", ["continue", "reject"])
+def test_a_declared_on_failure_reaches_the_wire_model(on_failure):
+    assert whois(on_failure=on_failure).to_request().on_failure == on_failure
+
+
+def test_a_rejecting_entry_reaches_the_request():
+    built = agent(pre_connect=[whois(on_failure="reject")]).to_request()
+
+    assert built.pre_connect_requests[0].on_failure == "reject"
+
+
+@pytest.mark.parametrize("on_failure", ["abort", "fail", "Reject", "", None, True])
+def test_an_unknown_on_failure_is_refused(on_failure):
+    with pytest.raises(ConfigurationError) as exc_info:
+        whois(on_failure=on_failure)
+
+    message = str(exc_info.value)
+    assert "on_failure" in message
+    assert "`continue` or `reject`" in message
+
+
 def test_a_sends_name_no_entry_produces_is_refused():
     with pytest.raises(ConfigurationError) as exc_info:
         agent(pre_connect=[whois(sends=["customer_tier"])])

@@ -334,6 +334,7 @@ agent = VoiceAgent(
             returns=[Captured(name="customer_tier", path="customer.tier", default="standard")],
             timeout_ms=400,
             allow_overrides=True,   # a top-level "greeting" key in the response replaces the greeting
+            on_failure="reject",    # this request picks the greeting, so a failure refuses the call
         ),
         PreConnectRequest(url="https://api.example.com/pre-connect/tier", sends=["customer_tier"]),
     ],
@@ -341,8 +342,12 @@ agent = VoiceAgent(
 ```
 
 Your endpoint has to answer within the request's timeout (800 ms ceiling per
-request; `timeout_ms` only lowers it). Pre-connect **fails open**: a timeout or
-error means the call proceeds without the values. A response with a top-level
+request; `timeout_ms` only lowers it). Pre-connect **fails open by default**: a
+timeout or error means the call proceeds without the values. Set
+`on_failure="reject"` on an entry to refuse the call instead — on any failure, a
+timeout, a non-2xx, a DNS or connect failure alike. That is worth doing when the
+entry overrides the voice or the greeting, because answering with the declared
+defaults picks the call up as the wrong persona. A response with a top-level
 `"reject": true` aborts the call, which is the one thing a pre-connect endpoint
 can do to stop a conversation. `sends` may only name values captured by an
 earlier entry; the SDK checks the order before deploying.

@@ -910,6 +910,12 @@ class PlaintextPreConnectRequest(BaseModel):
         examples=[['greeting']],
         title='Allow Overrides',
     )
+    on_failure: str | None = Field(
+        'continue',
+        description="What a failed request means: `continue` answers the call without this request's values, `reject` refuses the call. Applies to every failure — a timeout, a non-2xx, a DNS failure, a connect failure.",
+        examples=['reject'],
+        title='On Failure',
+    )
 
 
 class PlaintextToolDefinition(BaseModel):
@@ -986,6 +992,11 @@ class PreConnectRequestResponse(BaseModel):
         None,
         description="Agent fields this request's captured values may replace.",
         title='Allow Overrides',
+    )
+    on_failure: str | None = Field(
+        'continue',
+        description="What a failed request means: `continue` answers the call without this request's values, `reject` refuses the call.",
+        title='On Failure',
     )
 
 
