@@ -14,6 +14,7 @@ from .models.rest import (
 
 TRANSFER_MODES = ("cold", "warm")
 HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+ON_FAILURE = ("continue", "reject")
 
 MIN_RING_TIMEOUT = 1
 MAX_RING_TIMEOUT = 600
@@ -37,6 +38,7 @@ _E164 = re.compile(r"^\+[1-9]\d{1,14}$")
 
 TransferMode = Literal["cold", "warm"]
 Method = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
+OnFailure = Literal["continue", "reject"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -145,9 +147,15 @@ class PreConnectRequest:
     Four behaviours are not in the wire model and will surprise anyone who
     assumes otherwise.
 
-    **Pre-connect fails open on every error.**
-    A timeout, a 500, an unparseable body: the call proceeds without the values.
-    It is not a gate.
+    **Pre-connect fails open unless the entry asks to be a gate.**
+    By default a timeout, a 500, an unparseable body costs this entry's values
+    and nothing more: the call proceeds without them. ``on_failure="reject"``
+    refuses the call instead, on every kind of failure — a timeout, a non-2xx,
+    a DNS failure, a connect failure — with no special case for any of them.
+    It exists because a pre-connect request can override the voice and the
+    greeting. If the request that picks the voice fails and the call is
+    answered anyway with the declared defaults, it picks up as the wrong
+    persona, and a customer may hold that to be worse than not answering.
 
     **A greeting override is read from a top-level ``greeting`` key in the
     response**, not from a value named in ``returns``.
@@ -179,6 +187,7 @@ class PreConnectRequest:
     returns: Optional[list[Captured]] = None
     timeout_ms: Optional[int] = None
     allow_overrides: bool = False
+    on_failure: OnFailure = "continue"
 
     def __post_init__(self) -> None:
         if not self.url.startswith("https://"):
@@ -202,6 +211,12 @@ class PreConnectRequest:
                 f"pre-connect url={self.url!r}: allow_overrides is a flag, not a "
                 f"list. The wire field's vocabulary holds one value, `greeting`, so "
                 f"`True` is the whole of it."
+            )
+        if self.on_failure not in ON_FAILURE:
+            raise ConfigurationError(
+                f"pre-connect url={self.url!r}: on_failure={self.on_failure!r} is not "
+                f"`continue` or `reject`. `continue` proceeds without this request's "
+                f"values; `reject` refuses the call, on any failure."
             )
         _require_unique_capture_names(self.captured_names())
 
@@ -233,6 +248,7 @@ class PreConnectRequest:
             ],
             timeout_ms=self.timeout_ms,
             allow_overrides=[GREETING_OVERRIDE] if self.allow_overrides else None,
+            on_failure=self.on_failure,
         )
 
 

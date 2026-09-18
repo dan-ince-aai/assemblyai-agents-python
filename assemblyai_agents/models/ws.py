@@ -390,6 +390,7 @@ class AudioOutput(BaseModel):
 class PreConnectRequestWire(BaseModel):
     allow_overrides: list[str] | None = []
     http: HttpToolConfig
+    on_failure: str | None = 'continue'
     returns: list[PreConnectReturnWire] | None = Field([], validate_default=True)
     sends: list[str] | None = []
     timeout_ms: int | None = None
