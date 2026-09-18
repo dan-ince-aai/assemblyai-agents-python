@@ -44,6 +44,7 @@ from .models.rest import (
     AgentUpdateRequest,
     LlmConfigRequest,
     PlaintextToolDefinition,
+    ToolSessionUpdate,
     VoiceConfig,
 )
 from .models.ws import (
@@ -105,6 +106,7 @@ __all__ = [
     "AgentUpdateRequest",
     "LlmConfigRequest",
     "PlaintextToolDefinition",
+    "ToolSessionUpdate",
     "VoiceConfig",
     "verify",
     "pcm_to_base64",

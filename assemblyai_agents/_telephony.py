@@ -21,9 +21,10 @@ MIN_PRE_CONNECT_TIMEOUT_MS = 1
 MAX_PRE_CONNECT_TIMEOUT_MS = 800
 MAX_PRE_CONNECT_REQUESTS = 2
 
-# The only member of `allow_overrides`'s closed vocabulary, which is why the
-# field is a flag here rather than a list.
 GREETING_OVERRIDE = "greeting"
+SESSION_OVERRIDE = "session"
+# Closed vocabulary, mirrored from the API's own constant.
+ALLOWED_OVERRIDES = (GREETING_OVERRIDE, SESSION_OVERRIDE)
 
 _E164 = re.compile(r"^\+[1-9]\d{1,14}$")
 
@@ -143,14 +144,24 @@ class PreConnectRequest:
 
     **A greeting override is read from a top-level ``greeting`` key in the
     response**, not from a value named in ``returns``.
-    Setting ``allow_overrides=True`` permits it; naming a capture ``greeting``
-    does not deliver it.
+    Listing ``"greeting"`` in ``allow_overrides`` permits it; naming a capture
+    ``greeting`` does not deliver it.
 
     **A top-level ``reject: true`` in the response aborts the call.** That is
     the one thing a pre-connect endpoint can do to stop a conversation.
 
-    ``allow_overrides`` is a flag rather than a list because the wire field's
-    vocabulary is closed and holds one value, ``greeting``.
+    ``allow_overrides`` is a list drawn from a closed vocabulary. ``"greeting"``
+    lets the response replace the spoken greeting. ``"session"`` lets it return a
+    top-level ``session`` object carrying connect-time config — transcription
+    settings and the voice — applied before the call's first word::
+
+        {"session": {"input": {"keyterms": ["Transworld", "forbearance"]}}}
+
+    Which fields that object may carry is the platform's decision, not this
+    request's: the allowance is coarse, so ``"session.input"`` is not a thing to
+    write. An unpermitted field is refused, and the refusal costs the whole
+    block, never the call — like the rest of the chain, it fails open, and a
+    block that did not apply is visible only in logs and metrics.
     """
 
     url: str
@@ -159,7 +170,7 @@ class PreConnectRequest:
     sends: Optional[list[str]] = None
     returns: Optional[list[Captured]] = None
     timeout_ms: Optional[int] = None
-    allow_overrides: bool = False
+    allow_overrides: Optional[list[str]] = None
 
     def __post_init__(self) -> None:
         if not self.url.startswith("https://"):
@@ -178,12 +189,21 @@ class PreConnectRequest:
             MIN_PRE_CONNECT_TIMEOUT_MS,
             MAX_PRE_CONNECT_TIMEOUT_MS,
         )
-        if not isinstance(self.allow_overrides, bool):
+        # `allow_overrides` was a flag before `session` joined the vocabulary, so
+        # a bool is the one wrong type worth naming: iterating it would raise a
+        # TypeError that says nothing about what to write instead.
+        if isinstance(self.allow_overrides, bool):
             raise ConfigurationError(
-                f"pre-connect url={self.url!r}: allow_overrides is a flag, not a "
-                f"list. The wire field's vocabulary holds one value, `greeting`, so "
-                f"`True` is the whole of it."
+                f"pre-connect url={self.url!r}: allow_overrides is a list, not a "
+                f"flag. Write `allow_overrides=[\"greeting\"]` for what `True` used "
+                f"to mean."
             )
+        for override in self.allow_overrides or ():
+            if override not in ALLOWED_OVERRIDES:
+                raise ConfigurationError(
+                    f"pre-connect url={self.url!r}: allow_overrides={override!r} is "
+                    f"not one of {', '.join(ALLOWED_OVERRIDES)}."
+                )
         _require_unique_capture_names(self.captured_names())
 
     def captured_names(self) -> tuple[str, ...]:
@@ -213,7 +233,9 @@ class PreConnectRequest:
                 for captured in self.returns
             ],
             timeout_ms=self.timeout_ms,
-            allow_overrides=[GREETING_OVERRIDE] if self.allow_overrides else None,
+            allow_overrides=list(self.allow_overrides)
+            if self.allow_overrides
+            else None,
         )
 
 

@@ -148,7 +148,7 @@ def test_a_pre_connect_request_becomes_the_wire_model():
         headers=[Header(name="Authorization", value="Bearer x")],
         returns=[Captured(name="customer_tier", path="customer.tier", default="std")],
         timeout_ms=250,
-        allow_overrides=True,
+        allow_overrides=["greeting"],
     )
 
     assert entry.to_request() == PlaintextPreConnectRequest(
@@ -201,11 +201,30 @@ def test_a_pre_connect_timeout_outside_the_range_is_refused(timeout):
     assert "1-800" in str(exc_info.value)
 
 
-def test_allow_overrides_is_a_flag_not_a_list():
+def test_allow_overrides_is_a_list_from_a_closed_vocabulary():
     with pytest.raises(ConfigurationError) as exc_info:
-        whois(allow_overrides=["greeting"])
+        whois(allow_overrides=["system_prompt"])
 
     assert "allow_overrides" in str(exc_info.value)
+
+
+def test_the_flag_allow_overrides_used_to_be_is_refused_by_name():
+    """`True` was the whole API before `session` joined the vocabulary. Left to
+    iterate, it raises a TypeError that names neither the field nor the fix."""
+    with pytest.raises(ConfigurationError) as exc_info:
+        whois(allow_overrides=True)
+
+    assert "not a flag" in str(exc_info.value)
+
+
+def test_a_session_override_reaches_the_wire():
+    entry = whois(allow_overrides=["greeting", "session"])
+
+    assert entry.to_request().allow_overrides == ["greeting", "session"]
+
+
+def test_no_allow_overrides_sends_no_field():
+    assert whois().to_request().allow_overrides is None
 
 
 def test_a_sends_name_no_entry_produces_is_refused():

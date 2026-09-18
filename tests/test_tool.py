@@ -10,6 +10,7 @@ from assemblyai_agents.models.rest import (
     HttpToolHeaderInput,
     PlaintextHttpToolConfig,
     ResponseInstructions,
+    ToolSessionUpdate,
 )
 
 pytestmark = [pytest.mark.asyncio]
@@ -430,3 +431,40 @@ def test_hosted_at_refuses_a_relative_url():
 async def test_a_bound_tool_still_runs():
     bound = _shelf().hosted_at("https://demo.ngrok-free.app/tools/check_stock")
     assert await bound.invoke(item="drill") == {"in_stock": 3}
+
+
+async def test_a_tool_declares_no_session_update_by_default():
+    """A tool that never asked cannot reconfigure anything, so the field is
+    absent from the payload rather than an explicit `enabled=False`."""
+
+    @tool
+    def lookup(order_number: str) -> dict:
+        """Look up an order."""
+        return {"status": "shipped"}
+
+    assert lookup.definition().session_update is None
+
+
+async def test_session_update_reaches_the_tool_definition():
+    @tool(session_update=ToolSessionUpdate(enabled=True))
+    def verify_identity(account_ref: str) -> dict:
+        """Verify the caller."""
+        return {"result": "ok"}
+
+    assert verify_identity.definition().session_update == ToolSessionUpdate(
+        enabled=True
+    )
+
+
+async def test_hosting_a_tool_keeps_its_session_update():
+    """`hosted_at` rebuilds the spec, so a field added to it has to be carried
+    rather than defaulted back off."""
+
+    @tool(session_update=ToolSessionUpdate(enabled=True))
+    def verify_identity(account_ref: str) -> dict:
+        """Verify the caller."""
+        return {"result": "ok"}
+
+    hosted = verify_identity.hosted_at("https://example.com/tools/verify")
+
+    assert hosted.definition().session_update == ToolSessionUpdate(enabled=True)

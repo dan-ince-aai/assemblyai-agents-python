@@ -550,6 +550,14 @@ class TokenResponse(BaseModel):
     )
 
 
+class ToolSessionUpdate(BaseModel):
+    enabled: bool | None = Field(
+        False,
+        description='Whether this tool\'s HTTP response may carry a `session` block that reconfigures speech recognition for the rest of the call. Off by default: a tool that has never asked for it cannot reconfigure anything. When on, the tool must answer with `{"result": ..., "session": {...}}` — `result` is what the agent reads, `session` is stripped before the agent ever sees it. Only `input.keyterms`, `input.transcription_mode`, `input.continuous_partials`, `input.transcription_prompt` and `input.turn_detection.interruption_delay` may be set; anything else is refused and the whole block is dropped. The change takes effect from the caller\'s next utterance, and is applied best-effort — a refused block is reported in logs and metrics, not back to the tool.',
+        title='Enabled',
+    )
+
+
 class TransferMode(Enum):
     cold = 'cold'
     warm = 'warm'
@@ -906,8 +914,8 @@ class PlaintextPreConnectRequest(BaseModel):
     )
     allow_overrides: list[str] | None = Field(
         None,
-        description="Agent fields this request's captured values may replace. Closed vocabulary; today only `greeting`.",
-        examples=[['greeting']],
+        description="What this request's response is permitted to override. Closed vocabulary. `greeting` lets a top-level `greeting` key replace the spoken greeting. `session` lets a top-level `session` object carry connect-time settings, applied before the first word; which fields that object may carry is the platform's decision, and an unpermitted field is refused rather than quietly dropped.",
+        examples=[['greeting', 'session']],
         title='Allow Overrides',
     )
 
@@ -960,6 +968,10 @@ class PlaintextToolDefinition(BaseModel):
         None,
         description='Parameters the caller enters on the telephone keypad rather than speaking, each naming one property of `parameters`. Telephone calls only: a WebSocket session receives no keypad input.',
         title='Dtmf Collected Arguments',
+    )
+    session_update: ToolSessionUpdate | None = Field(
+        None,
+        description="Lets this tool's response reconfigure speech recognition for the rest of the call. Requires `http`.",
     )
 
 
@@ -1026,6 +1038,10 @@ class ToolResponse(BaseModel):
         None,
         description='Tool arguments the caller enters on the phone keypad instead of speaking them. Telephony calls only. Send the list back unchanged on update to keep the stored configuration.',
         title='Dtmf Collected Arguments',
+    )
+    session_update: ToolSessionUpdate | None = Field(
+        None,
+        description="Whether this tool's response may carry a `session` block that reconfigures speech recognition for the rest of the call.",
     )
 
 

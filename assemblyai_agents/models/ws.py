@@ -291,6 +291,10 @@ class ToolResult(BaseModel):
     type: Type23
 
 
+class ToolSessionUpdate(BaseModel):
+    enabled: bool | None = False
+
+
 class Type24(Enum):
     transcript_agent = 'transcript.agent'
 
@@ -417,6 +421,7 @@ class Tool(BaseModel):
     name: str
     parameters: ToolParameters | None = None
     response_instructions: ToolResponseInstructions | None = None
+    session_update: ToolSessionUpdate | None = None
     timeout_seconds: float | None = 120.0
     type: Type20
 
