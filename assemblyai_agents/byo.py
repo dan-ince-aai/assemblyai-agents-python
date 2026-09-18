@@ -245,6 +245,7 @@ class Silence:
 class Call:
     name: str
     arguments: dict
+    saying: Optional[str] = None
 
 
 def say(text: str) -> Say:
@@ -261,15 +262,39 @@ def silence() -> Silence:
     return Silence()
 
 
-def call_tool(name: str, **arguments: Any) -> Call:
+def call_tool(name: str, *, saying: Optional[str] = None, **arguments: Any) -> Call:
     """Run one of the agent's tools.
 
     Arguments whose value is None or empty are dropped, because the platform
     refuses a call carrying a value the conversation never established and an
     empty string counts as invented. Pass the caller's own words and let the
     tool do the reading, or pass a value an earlier tool returned.
+
+    ``saying`` is spoken while the tool runs. The tool call goes out first and
+    the words follow it in the same response, so the tool's clock starts before
+    the first syllable rather than after the last one. Without it a tool that
+    takes a few seconds is a few seconds of silence, which a caller reads as a
+    dropped call.
+
+    One line is all a single call buys: the response has to end before the
+    platform acts on any of it, so there is no way to add more while the tool
+    works. Holding the response open to try costs the tool call itself.
+
+    A tool with several seconds of work in it should therefore answer in stages
+    and be asked again, rather than going quiet until it is finished. Each
+    answer is its own turn, so each gets a line::
+
+        def decide(turn):
+            done = turn.pending and turn.pending.name == "check_balance"
+            if done and turn.pending.value.get("finished"):
+                return say(f"Right, your balance is {turn.pending.value['balance']}.")
+            stage = int((turn.pending.value or {}).get("stage", 0)) + 1 if done else 1
+            return call_tool("check_balance", saying=LINES[stage], stage=str(stage))
+
+    Measured on a live call against a ten-second job: silence after the caller's
+    question was 10s with no line, 8s with one, and 2s split into three stages.
     """
-    return Call(name, established(**arguments))
+    return Call(name, established(**arguments), saying=saying)
 
 
 def established(**arguments: Any) -> dict:
@@ -283,6 +308,16 @@ def established(**arguments: Any) -> dict:
 
 
 # --------------------------------------------------------------------------- answering
+
+
+def _spoken_pieces(text: Optional[str], chunk_words: bool) -> Iterator[str]:
+    if not text:
+        return
+    if not chunk_words:
+        yield text
+        return
+    for word in text.split(" "):
+        yield word + " "
 
 
 def stream(turn: Turn, answer: Any, *, chunk_words: bool = True) -> Iterator[str]:
@@ -309,13 +344,17 @@ def stream(turn: Turn, answer: Any, *, chunk_words: bool = True) -> Iterator[str
         }
 
     if isinstance(answer, Call):
+        # Order is cosmetic -- the platform reads the whole response before it
+        # acts -- but the call reads first because it is the point of the turn.
         yield frame(chunk({"role": "assistant", "tool_calls": [_wire_call(answer)]}))
+        for piece in _spoken_pieces(answer.saying, chunk_words):
+            yield frame(chunk({"content": piece}))
         yield frame(chunk({}, "tool_calls"))
     else:
         text = answer.text if isinstance(answer, Say) else ""
         yield frame(chunk({"role": "assistant", "content": ""}))
-        for piece in (text.split(" ") if chunk_words else [text]) if text else []:
-            yield frame(chunk({"content": piece + " " if chunk_words else piece}))
+        for piece in _spoken_pieces(text, chunk_words):
+            yield frame(chunk({"content": piece}))
         yield frame(chunk({}, "stop"))
 
     if (turn.request.get("stream_options") or {}).get("include_usage"):
@@ -335,7 +374,11 @@ def json_body(turn: Turn, answer: Any) -> dict:
     message: dict = {"role": "assistant", "content": answer.text if isinstance(answer, Say) else ""}
     finish = "stop"
     if isinstance(answer, Call):
-        message = {"role": "assistant", "content": None, "tool_calls": [_wire_call(answer)]}
+        message = {
+            "role": "assistant",
+            "content": answer.saying or None,
+            "tool_calls": [_wire_call(answer)],
+        }
         finish = "tool_calls"
     return {
         "id": "chatcmpl-" + uuid.uuid4().hex[:16],
