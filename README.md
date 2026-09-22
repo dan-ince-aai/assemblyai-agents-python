@@ -1,9 +1,28 @@
-# assemblyai-agents
+<img src="https://github.com/AssemblyAI/assemblyai-python-sdk/blob/master/assemblyai.png?raw=true" width="500"/>
 
-Backend SDK for the [AssemblyAI Voice Agents API](https://www.assemblyai.com/docs),
-in Python. Declare an agent and its tools in code, deploy it with one call, serve
+---
+
+[![CI](https://github.com/dan-ince-aai/assemblyai-agents-python/actions/workflows/ci.yml/badge.svg)](https://github.com/dan-ince-aai/assemblyai-agents-python/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/dan-ince-aai/assemblyai-agents-python)](https://github.com/dan-ince-aai/assemblyai-agents-python/blob/main/LICENSE)
+[![Python Versions](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/dan-ince-aai/assemblyai-agents-python/blob/main/pyproject.toml)
+[![AssemblyAI Twitter](https://img.shields.io/twitter/follow/AssemblyAI?label=%40AssemblyAI&style=social)](https://twitter.com/AssemblyAI)
+[![AssemblyAI YouTube](https://img.shields.io/youtube/channel/subscribers/UCtatfZMf-8EkIwASXM4ts0A)](https://www.youtube.com/@AssemblyAI)
+[![Discord](https://img.shields.io/discord/875120158014853141?logo=discord&label=Discord&link=https%3A%2F%2Fdiscord.com%2Fchannels%2F875120158014853141&style=social)](https://assemblyai.com/discord)
+
+# AssemblyAI Agents — Python SDK
+
+> _Build voice agents that pick up the phone_
+
+Backend SDK for the [AssemblyAI Voice Agents API](https://www.assemblyai.com/docs/voice-agents-api).
+Declare an agent and its tools as ordinary Python, deploy it with one call, serve
 the tool and pre-connect logic from your own backend, receive webhooks, and put
 the agent on a phone number.
+
+> **Not the same package as [`assemblyai`](https://github.com/AssemblyAI/assemblyai-python-sdk).**
+> That SDK transcribes and understands audio. This one builds the conversational
+> agents that sit on top of it. They are installed separately and can be used
+> together.
+
 
 ```python
 from assemblyai_agents import Client, VoiceAgent, tool
@@ -49,6 +68,56 @@ What is in the box:
   audio transport.
 - An offline **`testing`** module for unit-testing your tools.
 
+
+# Overview
+
+- [Quick start](#quick-start)
+  - [Requirements](#requirements)
+  - [Installation](#installation)
+  - [Authentication and regions](#authentication-and-regions)
+  - [Your first agent](#your-first-agent)
+- [Building the agent](#declaring-tools)
+  - [Declaring tools](#declaring-tools)
+  - [Pre-connect requests](#pre-connect-requests)
+  - [Bring your own LLM](#bring-your-own-llm)
+  - [Audio, transcription and turn detection](#audio-transcription-and-turn-detection)
+- [Running it](#phone-calls)
+  - [Phone calls](#phone-calls)
+  - [Webhooks](#webhooks)
+  - [Sessions, recordings and transcripts](#sessions-recordings-and-transcripts)
+  - [The realtime WebSocket](#the-realtime-websocket)
+- [Reference](#errors-retries-and-idempotency)
+  - [Errors, retries and idempotency](#errors-retries-and-idempotency)
+  - [Testing your tools](#testing-your-tools)
+  - [Sync and async](#sync-and-async)
+  - [Using this SDK with a coding agent](#using-this-sdk-with-a-coding-agent)
+  - [Development](#development)
+
+# Documentation
+
+- [Voice Agents API documentation](https://www.assemblyai.com/docs/voice-agents-api) — the API this SDK calls
+- [AssemblyAI documentation](https://www.assemblyai.com/docs) — everything else
+- [Examples repository](https://github.com/dan-ince-aai/assemblyai-agents-examples) — whole agents, including a Claude Code skill
+
+## Using with AI coding agents
+
+If you are building with Claude Code, Cursor, Copilot or another assistant, give
+it current API context so it does not generate code against remembered parameter
+names. Add this to your `CLAUDE.md`, `.cursorrules` or `AGENTS.md`:
+
+> Always fetch https://assemblyai.com/docs/llms.txt before writing AssemblyAI
+> code. The API has changed; do not rely on memorized parameter names.
+
+For on-demand lookups during a session, connect the docs MCP server:
+
+```bash
+claude mcp add assemblyai-docs --transport http https://mcp.assemblyai.com/docs
+```
+
+There is also a Claude Code skill for this SDK specifically — see
+[Using this SDK with a coding agent](#using-this-sdk-with-a-coding-agent).
+
+
 ## How it fits together
 
 ```
@@ -67,6 +136,8 @@ conversation,
 and when a session or call ends it delivers a signed webhook. Pre-connect,
 transfers and keypad input apply to phone calls; tools and webhooks apply to
 every session.
+
+# Quick start
 
 ## Requirements
 
@@ -152,7 +223,7 @@ one of them:
 client = Client(base_url="https://agents.us.assemblyai.com")
 ```
 
-## Quickstart
+## Your first agent
 
 Runnable agents, a starter project and a Claude Code skill are in a separate
 repository, because they are files you clone and edit while this is a package
