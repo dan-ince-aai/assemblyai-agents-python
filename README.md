@@ -302,7 +302,7 @@ attach a number to an agent that still has one.
 `agent.client_resident_tool_names()` lists them.
 
 A tool you **deploy from the command line** is a **managed** tool: you upload the
-module and AssemblyAI runs it. Unlike a client-resident tool it does not need a
+code and AssemblyAI runs it. Unlike a client-resident tool it does not need a
 process holding a session, so it works on phone calls; unlike an `http=` tool
 there is no endpoint of yours to operate. See *The command line* below.
 
@@ -329,6 +329,31 @@ AssemblyAI is now running the tools in tools.py for agent agent_b4c9e0d2...
 `deploy` exits 0 only once the agent is serving the new tools, so a build job can
 depend on its exit status. If your module fails to import, the error from your
 own code is printed.
+
+Tools that outgrow one file go in a directory instead. Point `deploy` at the
+directory and the whole project is uploaded; your tools are read from `main.py`
+at the top of it, and every other module is importable from there by its own
+path.
+
+```console
+$ assemblyai-agents deploy ./orders --agent agent_b4c9e0d2...
+Packed 6 files from ./orders, 10,240 bytes (sha256 953ef5687846).
+Not uploaded:
+  .env — an environment file, which never travels
+  Credentials belong in assemblyai-agents secrets set NAME, which your tools read back with ctx.secret("NAME").
+Deploying ./orders to agent agent_b4c9e0d2...
+```
+
+Every `.env` and `.env.*` file is left behind, because credentials belong in
+`secrets set`. So are `__pycache__`, `.git`, `.pyc` and `.pyo`, editor and tool
+caches, and any directory holding a `pyvenv.cfg`, which is what makes it a
+virtual environment. Anything else you want left out goes in a
+`.assemblyaiignore` file beside `main.py`, one glob per line. Everything else
+travels, including `pyproject.toml`, `requirements.txt` and lock files, and the
+command prints every exclusion rather than dropping it quietly. A symbolic link,
+a file that is not UTF-8 text and a project over 4 MiB or 512 files are refused
+before anything is uploaded. Packing the same unchanged directory twice produces
+the same bytes and the same `sha256`, so redeploying it costs nothing.
 
 Credentials your deployed tools need are stored per account and read with
 `ctx.secret(name)`. The value is taken from standard input and never from an

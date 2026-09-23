@@ -78,7 +78,7 @@ def _run_deploy(make_client, recorder: Recorder, responses: list, **overrides):
     code = _cli.deploy(
         client,
         path=overrides.get("path", "tools.py"),
-        source=overrides.get("source", SOURCE),
+        upload=overrides.get("upload", {"source": SOURCE}),
         agent_id=AGENT_ID,
         out=out,
         err=errs,
@@ -270,7 +270,7 @@ def test_interrupting_a_wait_says_the_deployment_is_still_running(
     code = _cli.deploy(
         client,
         path="tools.py",
-        source=SOURCE,
+        upload={"source": SOURCE},
         agent_id=AGENT_ID,
         out=out,
         err=errs,
