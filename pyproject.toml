@@ -29,6 +29,9 @@ dependencies = ["httpx>=0.28,<1", "pydantic>=2,<3", "websockets>=13,<16"]
 audio = ["pyaudio==0.2.14"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
+[project.scripts]
+assemblyai-agents = "assemblyai_agents._cli:main"
+
 [project.urls]
 Homepage = "https://www.assemblyai.com"
 Documentation = "https://www.assemblyai.com/docs"
@@ -43,8 +46,6 @@ packages = ["assemblyai_agents"]
 [tool.hatch.build.targets.sdist]
 include = [
   "assemblyai_agents",
-  "tests",
-  "examples",
   "README.md",
   "LICENSE",
   "pyproject.toml",

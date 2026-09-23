@@ -1,9 +1,9 @@
 # assemblyai-agents
 
 Backend SDK for the [AssemblyAI Voice Agents API](https://www.assemblyai.com/docs),
-in Python. Declare an agent and its tools in code, deploy it with one call, serve
-the tool and pre-connect logic from your own backend, receive webhooks, and put
-the agent on a phone number.
+in Python. Declare an agent and its tools in code, create it with one call, serve
+the tool and pre-connect logic from your own backend or hand it to AssemblyAI to
+run, receive webhooks, and put the agent on a phone number.
 
 ```python
 from assemblyai_agents import Client, VoiceAgent, tool
@@ -300,6 +300,66 @@ a WebSocket session, so the tool only exists while a browser or a desktop app
 is connected. A phone call has nobody to hand it to, and the SDK refuses to
 attach a number to an agent that still has one.
 `agent.client_resident_tool_names()` lists them.
+
+A tool you **deploy from the command line** is a **managed** tool: you upload the
+module and AssemblyAI runs it. Unlike a client-resident tool it does not need a
+process holding a session, so it works on phone calls; unlike an `http=` tool
+there is no endpoint of yours to operate. See *The command line* below.
+
+Deploying replaces the tools AssemblyAI runs for that agent and leaves the ones
+your own server answers alone, so one agent may hold both. A managed tool is the
+one carrying a deployment id on the agent record.
+
+### The command line
+
+Installing the package puts an `assemblyai-agents` command on your path. It
+reads your API key from `ASSEMBLYAI_API_KEY` and never accepts it as an option,
+because options are saved in your shell history.
+
+```console
+$ assemblyai-agents deploy tools.py --agent agent_b4c9e0d2...
+Deploying tools.py to agent agent_b4c9e0d2...
+Created deployment agentdep_cc3b6476...
+  pending (0s)
+  ready (28s)
+Deployed in 28s.
+AssemblyAI is now running the tools in tools.py for agent agent_b4c9e0d2...
+```
+
+`deploy` exits 0 only once the agent is serving the new tools, so a build job can
+depend on its exit status. If your module fails to import, the error from your
+own code is printed.
+
+Credentials your deployed tools need are stored per account and read with
+`ctx.secret(name)`. The value is taken from standard input and never from an
+argument:
+
+```console
+$ assemblyai-agents secrets set orders_api_key      # prompts, does not echo
+$ echo "$KEY" | assemblyai-agents secrets set orders_api_key
+$ assemblyai-agents secrets list
+$ assemblyai-agents secrets delete orders_api_key
+```
+
+Values are read fresh for each session, so changing a secret takes effect on the
+next call without redeploying. `secrets list` prints its header only to a
+terminal, so piping it into another command needs no stripping.
+
+Each deploy produces a deployment:
+
+```console
+$ assemblyai-agents deployments list --agent agent_b4c9e0d2...
+$ assemblyai-agents deployments status agentdep_cc3b6476...
+$ assemblyai-agents deployments delete agentdep_cc3b6476...
+```
+
+`deployments status` exits 0 when the deployment is ready, 1 when it failed and 3
+while it is still running. Reach for it after a deploy you stopped waiting for: a
+listing reports each stored status without re-checking its age, so that single
+read is what settles a deployment whose build died.
+
+Every command takes `--base-url` after the subcommand, defaulting to
+`ASSEMBLYAI_BASE_URL` and then to the production host.
 
 ### `ToolContext`
 
