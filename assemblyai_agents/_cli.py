@@ -1,12 +1,15 @@
 import argparse
+import base64
 import getpass
+import hashlib
 import os
 import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional, TextIO
+from typing import Any, Callable, Dict, Optional, TextIO
 
+from . import _project
 from ._client import Client
 from ._config import DEFAULT_BASE_URL, ENV_API_KEY
 from ._exceptions import APIError
@@ -19,6 +22,11 @@ DEPLOYMENTS_PATH = "/v1/agent-deployments"
 SECRETS_PATH = "/v1/tool-secrets"
 AGENTS_PATH = "/v1/agents"
 MAX_SOURCE_CHARACTERS = 262144
+
+# How many excluded entries are named before the rest are counted. A pruned
+# directory is one entry, not one per file inside it, so a real project's list
+# is short and this only bites on a tree that was never meant to be deployed.
+MAX_EXCLUSIONS_SHOWN = 12
 
 STATUS_READY = "ready"
 
@@ -134,7 +142,7 @@ def read_source(path: str) -> str:
     except FileNotFoundError:
         raise UsageError(f"No such file: {path}")
     except IsADirectoryError:
-        raise UsageError(f"{path} is a directory; give the path to one .py file.")
+        raise UsageError(f"{path} is a directory that cannot be opened.")
     except UnicodeDecodeError:
         raise UsageError(f"{path} is not UTF-8 text, so it is not a Python module.")
     except OSError as exc:
@@ -147,6 +155,59 @@ def read_source(path: str) -> str:
             f"{MAX_SOURCE_CHARACTERS:,}."
         )
     return source
+
+
+def read_upload(path: str, out: TextIO) -> Dict[str, str]:
+    """The request body's code field, chosen by what PATH turned out to be.
+
+    A directory is packed and sent whole; a single file is sent as it always
+    was. The service treats the second as shorthand for the first, so both
+    spellings of one project deduplicate to one stored project and one image.
+    """
+    target = Path(path)
+    if not target.is_dir():
+        return {"source": read_source(path)}
+    try:
+        project = _project.read_project(target)
+        archive = _project.build_archive(project.files)
+    except _project.ProjectError as exc:
+        raise UsageError(str(exc))
+    _print_packing(path, project, archive, out)
+    return {"archive": base64.b64encode(archive).decode("ascii")}
+
+
+def _print_packing(
+    path: str, project: _project.Project, archive: bytes, out: TextIO
+) -> None:
+    digest = hashlib.sha256(archive).hexdigest()
+    print(
+        f"Packed {len(project.files)} files from {path}, {len(archive):,} bytes "
+        f"(sha256 {digest[:12]}).",
+        file=out,
+    )
+    if project.excluded:
+        print("Not uploaded:", file=out)
+        for name, reason in project.excluded[:MAX_EXCLUSIONS_SHOWN]:
+            print(f"  {name} — {reason}", file=out)
+        remaining = len(project.excluded) - MAX_EXCLUSIONS_SHOWN
+        if remaining > 0:
+            print(f"  and {remaining} more", file=out)
+        if any(
+            reason == _project.ENV_FILE_REASON for _, reason in project.excluded
+        ):
+            print(
+                f"  Credentials belong in {PROG} secrets set NAME, which your "
+                f'tools read back with ctx.secret("NAME").',
+                file=out,
+            )
+    for name in project.empty_directories:
+        # A deployment is a set of file paths, so there is nothing to carry an
+        # empty directory. Said here because the symptom otherwise arrives as an
+        # ImportError from a package that looks present on the customer's disk.
+        print(
+            f"  {name}/ holds no files, so it will not exist in the deployment.",
+            file=out,
+        )
 
 
 def _print_api_error(exc: APIError, err: TextIO) -> None:
@@ -235,7 +296,7 @@ def deploy(
     client: Client,
     *,
     path: str,
-    source: str,
+    upload: Dict[str, str],
     agent_id: str,
     out: TextIO,
     err: TextIO,
@@ -249,7 +310,7 @@ def deploy(
         created: Any = client.request(
             "POST",
             DEPLOYMENTS_PATH,
-            json={"agent_id": agent_id, "source": source},
+            json={"agent_id": agent_id, **upload},
             idempotent=True,
         )
     except APIError as exc:
@@ -653,22 +714,43 @@ def build_parser() -> argparse.ArgumentParser:
     deploy_parser = subparsers.add_parser(
         "deploy",
         parents=[common],
-        help="Upload a tool module to an agent and wait for it to go live.",
+        help="Upload your tool code to an agent and wait for it to go live.",
         description=(
-            "Uploads FILE to AssemblyAI and waits for the deployment to finish. "
-            "AssemblyAI runs the tools in it. The module has to import cleanly "
-            "and define at least one function decorated with @tool(); each "
-            "tool's schema is read from the module itself. If the module fails "
-            "to import, the error from your own code is printed. Deploying "
-            "replaces the tools AssemblyAI runs for this agent and leaves tools "
-            "your own server answers alone. Exits 0 only when the agent is "
-            "serving the new tools, so a build job can depend on the exit status."
+            f"Uploads PATH to AssemblyAI and waits for the deployment to "
+            f"finish. AssemblyAI runs the tools in it. PATH is either one "
+            f"Python file, or a project directory with {_project.ENTRY_NAME} at "
+            f"the top of it — your tools are read from that file, and every "
+            f"other module in the directory is importable from it. The code has "
+            f"to import cleanly and define at least one function decorated with "
+            f"@tool(). If it fails to import, the error from your own code is "
+            f"printed. Deploying replaces the tools AssemblyAI runs for this "
+            f"agent and leaves tools your own server answers alone. Exits 0 only "
+            f"when the agent is serving the new tools, so a build job can depend "
+            f"on the exit status."
+        ),
+        epilog=(
+            f"A directory is uploaded whole, minus these: every .env and .env.* "
+            f"file, because credentials belong in `{PROG} secrets set`; "
+            f"__pycache__, .git, .pyc and .pyo, which AssemblyAI drops anyway; "
+            f"editor and tool caches; any directory holding a "
+            f"{_project.VENV_MARKER}, which makes it a virtual environment; and "
+            f"anything matched by a {_project.IGNORE_FILE} file at the top of "
+            f"the project, one glob per line. Everything else travels, "
+            f"including pyproject.toml, requirements.txt and lock files, and "
+            f"every exclusion is printed. A symbolic link, a file that is not "
+            f"UTF-8 text, and a project over "
+            f"{_project.MAX_ARCHIVE_BYTES // (1024 * 1024)} MiB or "
+            f"{_project.MAX_FILES} files are refused rather than quietly "
+            f"dropped."
         ),
     )
     deploy_parser.add_argument(
-        "file",
-        metavar="FILE",
-        help="Python file defining your tools.",
+        "path",
+        metavar="PATH",
+        help=(
+            f"Python file defining your tools, or a project directory with "
+            f"{_project.ENTRY_NAME} at the top of it."
+        ),
     )
     deploy_parser.add_argument(
         "--agent",
@@ -836,12 +918,12 @@ def run(
     if args.command == "deploy":
         if not args.agent:
             raise UsageError(f"No agent given. Pass --agent, or set {ENV_AGENT_ID}.")
-        source = read_source(args.file)
+        upload = read_upload(args.path, out)
         with Client(base_url=args.base_url) as client:
             return deploy(
                 client,
-                path=args.file,
-                source=source,
+                path=args.path,
+                upload=upload,
                 agent_id=args.agent,
                 out=out,
                 err=err,
