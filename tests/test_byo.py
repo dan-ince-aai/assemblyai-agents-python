@@ -14,11 +14,18 @@ from assemblyai_agents.byo import (
     Turn,
     call_tool,
     digits_said,
-    established,
     json_body,
     say,
     silence,
     stream,
+)
+
+# The guidance the platform appends to every failed result, as it sends it.
+FAILED_GUIDANCE = (
+    "\n[The tool did not run, so nothing has changed. You called it with: "
+    '{"id": "7"}.\nFind a correct value before you reply:\n'
+    "- reuse a value exactly as an earlier tool result returned it;\n"
+    "Only ask the caller if none of those has it. Never invent a value.]"
 )
 
 
@@ -67,7 +74,7 @@ def test_the_callers_words_come_from_a_user_message():
 
 def test_a_turn_injected_by_a_test_driver_is_read_from_the_quoted_instruction():
     # `create_reply(instructions=...)` arrives as a system message quoting the
-    # caller. The platform's own notes use single quotes, so they never match.
+    # caller.
     turn = Turn.from_request(
         request([
             {"role": "system", "content": "prompt"},
@@ -174,15 +181,105 @@ def test_a_value_collected_over_turns_is_read_back_out_of_the_transcript():
     assert turn.said_before("What is your date of birth")
 
 
+def test_a_json_error_body_from_a_failed_tool_is_not_a_result():
+    # Your endpoint's error body reaches the transcript as it was sent, so it
+    # parses as JSON; only the guidance the platform appends says it failed.
+    turn = Turn.from_request(
+        request([
+            {"role": "system", "content": "prompt"},
+            tool_call("c1", "do_thing", {"id": "7"}),
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"detail": "unauthorized"}) + FAILED_GUIDANCE},
+        ])
+    )
+    assert turn.pending.ran is False
+    assert turn.pending.note == '{"detail": "unauthorized"}'
+    assert turn.result_of("do_thing") is None
+
+
+def test_a_result_delivered_late_still_ran():
+    # The platform appends this note to a result the caller had moved on from.
+    late = (
+        json.dumps({"value": 42})
+        + "\n\n[This result arrived after the caller had already moved on, so it was "
+        "never spoken to them. Incorporate it into your next reply if it is still "
+        "relevant; otherwise ignore it.]"
+    )
+    turn = Turn.from_request(
+        request([
+            {"role": "system", "content": "prompt"},
+            tool_call("c1", "do_thing", {"id": "7"}),
+            {"role": "tool", "tool_call_id": "c1", "content": late},
+        ])
+    )
+    assert turn.pending.ran is True
+    assert turn.pending.get("value") == 42
+
+
+def test_a_result_cut_at_the_size_cap_ran_but_has_no_value():
+    turn = Turn.from_request(
+        request([
+            {"role": "system", "content": "prompt"},
+            tool_call("c1", "do_thing", {"id": "7"}),
+            {"role": "tool", "tool_call_id": "c1", "content": '{"rows": [1, 2\n…[truncated]'},
+        ])
+    )
+    assert turn.pending.ran is True
+    assert turn.pending.value is None
+    assert turn.pending.note == "truncated"
+
+
+def test_the_platforms_duplicate_call_answer_is_not_a_result():
+    turn = Turn.from_request(
+        request([
+            {"role": "system", "content": "prompt"},
+            tool_call("c1", "do_thing", {"id": "7"}),
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": "This function is already executing with these arguments. "
+                "Result is pending from the previous call.",
+            },
+        ])
+    )
+    assert turn.pending.ran is False
+
+
+def test_words_spoken_with_a_call_do_not_answer_its_result():
+    # The words and the call arrive folded into one assistant message, which
+    # sits before the result.
+    turn = Turn.from_request(
+        request([
+            {"role": "system", "content": "prompt"},
+            {**tool_call("c1", "do_thing", {"id": "7"}), "content": "One moment."},
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"ok": True})},
+        ])
+    )
+    assert turn.spoken == ("One moment.",)
+    assert turn.pending is not None and turn.pending.get("ok") is True
+
+
+def test_a_user_message_wins_over_a_quoted_argument_in_a_platform_note():
+    # The completion note writes arguments out as Python values, which puts
+    # double quotes around a string holding an apostrophe.
+    turn = Turn.from_request(
+        request([
+            {"role": "system", "content": "prompt"},
+            {"role": "user", "content": "my name is Maria"},
+            {"role": "system", "content": 'The function call verify(name="it\'s Maria") has just completed.'},
+        ])
+    )
+    assert turn.caller_said == "my name is Maria"
+
+
 # --------------------------------------------------------------------------- deciding
 
 
-def test_a_tool_call_drops_arguments_the_call_has_not_established():
-    # The platform refuses a call carrying a value nobody said, and an empty
-    # string counts as invented.
+def test_a_tool_call_keeps_every_argument_as_given():
+    # The platform does not check a customer LLM's arguments, not even for
+    # required ones, so a dropped argument would reach the tool as a missing
+    # keyword rather than be caught.
     answer = call_tool("verify", caller_said="it's Maria", reference="", note=None, count=0)
-    assert answer.arguments == {"caller_said": "it's Maria", "count": 0}
-    assert established(a="x", b="", c=None) == {"a": "x"}
+    assert answer.arguments == {"caller_said": "it's Maria", "reference": "", "note": None, "count": 0}
 
 
 def test_the_answers_are_three_plain_functions():
@@ -268,19 +365,19 @@ def test_a_bare_call_still_says_nothing():
     assert not any(d.get("content") for d, _ in _deltas(frames))
 
 
-def test_the_call_goes_out_before_the_words():
-    """The tool's clock starts on the first frame. Emitting the words first
-    would spend the whole spoken line before the platform has the call."""
+def test_a_call_and_its_words_travel_in_one_response():
+    """The platform acts on the call only once the response finishes, so the
+    order within it is cosmetic; the call is written first."""
     frames = list(stream(_turn(), call_tool("check_balance", saying="One moment.", account="1")))
     deltas = _deltas(frames)
 
-    assert deltas[0][0].get("tool_calls"), "the tool call is not the first frame"
+    assert deltas[0][0].get("tool_calls")
     assert "".join(d.get("content") or "" for d, _ in deltas).strip() == "One moment."
 
 
 def test_the_response_still_finishes_as_a_tool_call():
-    """The words are carried by a response whose reason is `tool_calls`; a
-    `stop` here would end the turn instead of running the tool."""
+    """The words are carried by a response whose reason is `tool_calls`, the
+    finish an OpenAI-compatible client expects after a tool call."""
     frames = list(stream(_turn(), call_tool("check_balance", saying="One moment.", account="1")))
 
     assert [r for _, r in _deltas(frames) if r] == ["tool_calls"]
@@ -289,6 +386,22 @@ def test_the_response_still_finishes_as_a_tool_call():
 def test_saying_is_the_spoken_line_not_a_tool_argument():
     """The one shape this changes: `saying` is keyword-only on `call_tool`, so a
     tool whose own argument is named `saying` no longer receives it. Build the
-    `Call` directly if you need that, which also skips `established()`."""
+    `Call` directly if you need that."""
     assert call_tool("t", saying="One moment.", account="1").arguments == {"account": "1"}
     assert Call("t", {"saying": "a value"}).saying is None
+
+
+@pytest.mark.parametrize(
+    ("spoken", "digits"),
+    [
+        ("it's four four seven one", "4471"),
+        ("forty one eleven", "4111"),
+        ("4 1 double 1", "4111"),
+        ("oh seven triple nine", "07999"),
+        ("twenty", "20"),
+        ("thirty oh", "300"),
+        ("no digits here", ""),
+    ],
+)
+def test_digits_are_read_out_of_speech(spoken, digits):
+    assert digits_said(spoken) == digits

@@ -14,11 +14,16 @@ no state, so it is safe to run several copies. Where it runs is not its
 business: a laptop with a tunnel in front of it today, a container somewhere
 tomorrow, without the code above changing.
 
-    POST /tools/{name}            each @tool on the declaration
-    POST /v1/chat/completions     `reply(turn)`, streamed as the platform wants
-    POST <your pre-connect path>  a handler you pass in
-    POST /webhooks/voice-agents   verified against your secret
-    GET  /healthz                 what is loaded
+    ANY  /tools/{name}                each @tool on the declaration
+    POST <prefix>/chat/completions    `reply(turn)`, streamed as the platform wants
+    ANY  <your pre-connect path>      a handler you pass in
+    POST /webhooks/voice-agents       verified against your secret
+    GET  /healthz                     what is loaded
+
+A tool and a pre-connect request arrive with whatever method you declared for
+them: GET and DELETE carry the arguments as a query string, the others as a
+JSON body. The chat path is whatever path your `llm.base_url` has, followed by
+`/chat/completions`, so `https://host/v1` and `https://host` both work.
 
 For anything you would rather host yourself, `routes()` hands back the same
 handlers as plain callables to mount wherever you like.
@@ -29,14 +34,31 @@ import json
 import re
 import socket
 import threading
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, get_type_hints
 from urllib.parse import parse_qsl, urlsplit
 
+from pydantic import BaseModel, TypeAdapter, ValidationError
+
 from . import webhooks as _webhooks
+from ._context import ToolContext
+from ._exceptions import WebhookVerificationError
 from .byo import Turn, json_body, stream
 
 _JSON = "application/json"
+_TEXT = "text/plain; charset=utf-8"
+_ANY_METHOD = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+# The platform fails a pre-connect request whose response is larger than this,
+# which refuses the call outright on an entry set to reject.
+PRE_CONNECT_RESPONSE_LIMIT_BYTES = 8 * 1024
+
+# A tool that raises is answered with this closed shape, the same one the
+# hosted runtime uses. The platform hands a tool's error body to the model as it
+# was sent, so an exception message here would be read out to the caller, and
+# an exception message is where a URL or a key lands by accident.
+_TOOL_RAISED = "tool_raised"
 
 
 def _print(message: str) -> None:
@@ -54,23 +76,42 @@ class Refused(Exception):
         self.detail = detail
 
 
-def _coerce(arguments: dict, schema: dict) -> dict:
-    """Restore types on a GET tool's query string, which is all strings."""
-    properties = (schema or {}).get("properties", {})
-    restored = {}
-    for key, value in arguments.items():
-        kind = properties.get(key, {}).get("type")
-        try:
-            if kind == "integer":
-                value = int(value)
-            elif kind == "number":
-                value = float(value)
-            elif kind == "boolean":
-                value = str(value).lower() in ("1", "true", "yes")
-        except (TypeError, ValueError):
-            pass
-        restored[key] = value
-    return restored
+class _Text(str):
+    """A result to send as plain text rather than as a JSON string."""
+
+
+def _coerce(declared: Any, arguments: dict) -> dict:
+    """Arguments converted to the handler's annotations.
+
+    A GET or DELETE tool's query string is all strings, and a nested object
+    arrives as a plain dict. The hosted runtime validates both against the
+    handler's type hints, so a tool behaves the same served from here. As
+    there, an argument the handler does not declare is dropped.
+    """
+    hints = get_type_hints(declared.spec.target)
+    coerced = {}
+    for name, value in arguments.items():
+        annotation = hints.get(name)
+        if annotation is None or annotation is ToolContext:
+            continue
+        coerced[name] = TypeAdapter(annotation).validate_python(value)
+    return coerced
+
+
+def _arguments(query: str, body: bytes) -> Any:
+    if body:
+        return json.loads(body)
+    return dict(parse_qsl(query))
+
+
+def _render(result: Any) -> Any:
+    if isinstance(result, str):
+        # Unquoted, because the platform hands the body to the model as text
+        # and a JSON string literal would reach it wrapped in quotes.
+        return _Text(result)
+    if isinstance(result, BaseModel):
+        return result.model_dump(mode="json")
+    return result
 
 
 def routes(
@@ -82,13 +123,21 @@ def routes(
     pre_connect: Optional[Mapping[str, Callable]] = None,
     webhook_secret: Optional[str] = None,
     on_event: Optional[Callable[[dict], None]] = None,
+    context: Optional[ToolContext] = None,
+    log: Optional[Callable[[str], None]] = _print,
 ) -> dict:
     """The handlers, without a server, for mounting in your own framework.
 
-    Each takes `(path, query, body_bytes, headers)` and returns
-    `(status, payload)`, where a payload that is an iterator is streamed.
+    Keyed by `(method, compiled path pattern)`. Each takes
+    `(path, query, body_bytes, headers)` and returns `(status, payload)`, where
+    a payload that is an iterator is streamed as Server-Sent Events and a `str`
+    payload is plain text. `headers` must look names up case-insensitively.
     """
     tools = {declared.name: declared for declared in agent.tools or []}
+
+    def note(message: str) -> None:
+        if log is not None:
+            log(message)
 
     def check(headers: Mapping[str, str], secret: Optional[str], status: int = 401) -> None:
         if secret and headers.get("Authorization") != f"Bearer {secret}":
@@ -100,17 +149,20 @@ def routes(
         declared = tools.get(name)
         if declared is None:
             raise Refused(404, f"no tool named {name!r}")
-        if body:
-            arguments = json.loads(body)
-        else:
-            # A GET or DELETE tool sends its arguments as a query string.
-            arguments = _coerce(dict(parse_qsl(query)), declared.spec.parameters)
+        arguments = _arguments(query, body)
         if not isinstance(arguments, dict):
             raise Refused(422, "arguments were not a JSON object")
         try:
-            return 200, asyncio.run(declared.invoke(**arguments))
-        except TypeError as exc:
+            arguments = _coerce(declared, arguments)
+        except ValidationError as exc:
             raise Refused(422, str(exc)) from exc
+        try:
+            result = asyncio.run(declared.invoke(context=context, **arguments))
+        except Exception as exc:
+            # The message stays in your own log; the platform only hears the type.
+            note(f"tool {name!r} raised {type(exc).__name__}: {exc}")
+            return 500, {"error": _TOOL_RAISED, "type": type(exc).__name__}
+        return 200, _render(result)
 
     def replies(path: str, query: str, body: bytes, headers: Mapping[str, str]):
         if reply is None:
@@ -128,7 +180,7 @@ def routes(
             raise Refused(503, "no webhook secret configured")
         try:
             event = _webhooks.verify(body, headers.get("X-AAI-Signature", ""), webhook_secret)
-        except _webhooks.WebhookVerificationError as exc:
+        except WebhookVerificationError as exc:
             raise Refused(400, str(exc)) from exc
         if on_event is not None:
             on_event(event)
@@ -143,26 +195,38 @@ def routes(
             "pre_connect": sorted(pre_connect or {}),
         }
 
-    table: dict = {
-        ("POST", re.compile(r"^/tools/[^/]+$")): run_tool,
-        ("POST", re.compile(r"^/v1/chat/completions$")): replies,
-        ("POST", re.compile(r"^/webhooks/voice-agents$")): webhook,
-        ("GET", re.compile(r"^/healthz$")): health,
-    }
+    def lookup(handler: Callable) -> Callable:
+        def run(path: str, query: str, body: bytes, headers: Mapping[str, str]):
+            check(headers, tool_secret)
+            result = handler(_arguments(query, body))
+            if asyncio.iscoroutine(result):
+                result = asyncio.run(result)
+            # An empty body is not JSON, and the platform fails the entry on it.
+            result = {} if result is None else _render(result)
+            size = len(json.dumps(result, default=str).encode())
+            if size > PRE_CONNECT_RESPONSE_LIMIT_BYTES:
+                note(
+                    f"pre-connect {path} answered {size} bytes; the platform fails "
+                    f"any response over {PRE_CONNECT_RESPONSE_LIMIT_BYTES}"
+                )
+            return 200, result
+
+        return run
+
+    table: dict = {}
+    # The platform sends a tool's arguments with the tool's own method.
+    for method in _ANY_METHOD:
+        table[(method, re.compile(r"^/tools/[^/]+$"))] = run_tool
+    # The OpenAI client posts to `<base_url>/chat/completions`, so the prefix is
+    # whatever path the agent's `llm.base_url` has, including none.
+    table[("POST", re.compile(r"^(/.*)?/chat/completions$"))] = replies
+    table[("POST", re.compile(r"^/webhooks/voice-agents$"))] = webhook
+    table[("GET", re.compile(r"^/healthz$"))] = health
 
     for path, handler in (pre_connect or {}).items():
-        def wrap(handler=handler):
-            def run(path: str, query: str, body: bytes, headers: Mapping[str, str]):
-                check(headers, tool_secret)
-                payload = json.loads(body) if body else {}
-                result = handler(payload)
-                if asyncio.iscoroutine(result):
-                    result = asyncio.run(result)
-                return 200, result
-
-            return run
-
-        table[("POST", re.compile(rf"^{re.escape(path)}$"))] = wrap()
+        run = lookup(handler)
+        for method in _ANY_METHOD:
+            table[(method, re.compile(rf"^{re.escape(path)}$"))] = run
 
     return table
 
@@ -200,10 +264,13 @@ def serve(
     pre_connect: Optional[Mapping[str, Callable]] = None,
     webhook_secret: Optional[str] = None,
     on_event: Optional[Callable[[dict], None]] = None,
+    context: Optional[ToolContext] = None,
     log: Optional[Callable[[str], None]] = _print,
     background: bool = False,
 ) -> Any:
     """Answer the platform's HTTPS requests with your own functions.
+
+    `context` is handed to any tool that takes a `ToolContext`.
 
     Blocks until interrupted. With `background=True` it returns the server, for
     a test or a script that has other work to do; call `.shutdown()` when done.
@@ -216,6 +283,8 @@ def serve(
         pre_connect=pre_connect,
         webhook_secret=webhook_secret,
         on_event=on_event,
+        context=context,
+        log=log,
     )
 
     def note(message: str) -> None:
@@ -240,28 +309,38 @@ def serve(
                     status, payload = handler(parts.path, parts.query, body, self.headers)
                 except Refused as refused:
                     note(f"{self.command} {parts.path} -> {refused.status} {refused.detail}")
-                    self._send_json(refused.status, {"detail": refused.detail})
+                    self._send(refused.status, {"detail": refused.detail})
                     return
-                except Exception as exc:  # a tool raised: say so, keep serving
+                except Exception as exc:
+                    # Anything else that raised: log it in full, keep serving,
+                    # and answer with the type only, since the platform can hand
+                    # this body to the model.
                     note(f"{self.command} {parts.path} -> 500 {type(exc).__name__}: {exc}")
-                    self._send_json(500, {"detail": f"{type(exc).__name__}: {exc}"})
+                    self._send(500, {"detail": type(exc).__name__})
                     return
-                if hasattr(payload, "__iter__") and not isinstance(payload, (dict, list, str, bytes)):
+                if isinstance(payload, Iterator):
                     note(f"{self.command} {parts.path} -> streaming")
                     self._send_stream(payload)
                     return
                 note(f"{self.command} {parts.path} -> {status}")
-                self._send_json(status, payload)
+                self._send(status, payload)
                 return
-            self._send_json(404, {"detail": f"no route for {self.command} {parts.path}"})
+            self._send(404, {"detail": f"no route for {self.command} {parts.path}"})
 
         do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _dispatch
 
-        def _send_json(self, status: int, payload: Any) -> None:
-            encoded = b"" if payload is None else json.dumps(payload, default=str).encode()
+        def _send(self, status: int, payload: Any) -> None:
+            # A `str` result goes out as plain text, and JSON `null` is still a
+            # body; only a 204 is sent empty.
+            if status == 204:
+                encoded, content_type = b"", None
+            elif isinstance(payload, _Text):
+                encoded, content_type = str(payload).encode(), _TEXT
+            else:
+                encoded, content_type = json.dumps(payload, default=str).encode(), _JSON
             self.send_response(status)
-            if encoded:
-                self.send_header("Content-Type", _JSON)
+            if content_type:
+                self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             if encoded:
@@ -296,7 +375,9 @@ def serve(
             f"usually an earlier run of this script. Stop it (`lsof -ti :{port} | "
             f"xargs kill`), or set PORT to a free one."
         ) from exc
-    note(f"serving {agent.name!r} on http://{host}:{port} — {', '.join(sorted(r[1].pattern for r in table))}")
+    served = ["/tools/{name}", "<prefix>/chat/completions", "/webhooks/voice-agents", "/healthz"]
+    served += sorted(pre_connect or {})
+    note(f"serving {agent.name!r} on http://{host}:{server.server_address[1]} — {', '.join(served)}")
     if background:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server
