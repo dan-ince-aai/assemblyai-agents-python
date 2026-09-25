@@ -201,10 +201,28 @@ a new tool bound to an address and leaves the original alone, so a module-level
 `TOOLS` stays importable by tests.
 
 `serve()` answers every route the platform will call, read off the declaration,
-on the standard library alone: `POST /tools/{name}` per tool, the reply
-endpoint when you pass `reply=`, a route per pre-connect request, webhook
-delivery and `/healthz`. `routes()` returns the same handlers as plain callables
-to mount into an application you already have.
+on the standard library alone: `/tools/{name}` per tool, the reply endpoint
+when you pass `reply=`, a route per pre-connect request, webhook delivery and
+`/healthz`. It logs that list when it starts. `routes()` returns the same
+handlers as plain callables to mount into an application you already have.
+
+- **Tools and pre-connect requests answer on whatever method you declared.**
+  GET and DELETE carry their arguments as a query string, which `serve()`
+  converts to the handler's type hints the way the hosted runtime does. POST,
+  PUT and PATCH carry a JSON body.
+- **The reply endpoint is `<prefix>/chat/completions`.** The prefix is whatever
+  path your `llm.base_url` has, so `https://host/v1` and `https://host` both
+  work.
+- **A tool's result is sent the way the model should read it.** A string goes
+  out as plain text, not as a quoted JSON string, and a pydantic model as its
+  JSON.
+- **A tool that raises answers `500 {"error": "tool_raised", "type": ...}`.**
+  The platform hands a tool's error body to the model, so the exception's
+  message is kept in your log and never sent.
+- **A pre-connect handler that returns `None` answers `{}`**, because the
+  platform fails an entry whose body is not JSON. An answer over 8 KiB is
+  logged as a warning, because the platform fails that entry too.
+- `context=` is handed to any tool that takes a `ToolContext`.
 
 `claim_port()` fails before the deploy rather than after it. Deploying repoints
 the stored agent, so a port still held by an earlier run would otherwise leave a
@@ -746,7 +764,7 @@ in `base_url`; see *Deploying an application instead of tools* above.
 ### `assemblyai_agents.byo` reads the request and answers it
 
 Reading the transcript and streaming Server-Sent Events is contract detail, not
-your agent. `byo` is that detail and nothing else: thirteen names, no
+your agent. `byo` is that detail and nothing else: twelve names, no
 framework, no opinion about how you decide.
 
 ```python
@@ -759,7 +777,7 @@ def decide(turn):
         return say("Could you give me your full name?")
     return call_tool("verify_caller", caller_said=turn.caller_said)
 
-@app.post("/v1/chat/completions")          # any framework; this one is FastAPI
+@app.post("/v1/chat/completions")          # <base_url path>/chat/completions; any framework
 async def replies(request: Request):
     body = await request.json()
     turn = Turn.from_request(body)
@@ -768,8 +786,8 @@ async def replies(request: Request):
 
 Three functions say what happens next: `say(text)`, `call_tool(name, **args)`
 and `silence()`, which is how a finished call ends since an agent cannot hang
-up. `call_tool` drops arguments the conversation never established, so the
-platform accepts the call.
+up. `call_tool` sends the arguments exactly as you give them. The platform does
+not check them for you, so validate in the tool.
 
 `Turn` is the request already read, with the traps handled:
 
@@ -777,7 +795,8 @@ platform accepts the call.
 | --- | --- |
 | `turn.caller_said` | the caller's latest words, from a user message or a quoted instruction |
 | `turn.pending` | the tool result nothing has been said about yet, which is the cue to speak |
-| `turn.pending.ran` | `False` when the platform refused the call, so a refusal is never reported as a result |
+| `turn.pending.ran` | `False` when the platform refused the call or the tool failed, so a refusal is never reported as a result. A tool that returns a plain string also reads as `False`, so return a dict |
+| `turn.pending.note` | why it did not run, or `"truncated"` for a result the platform cut short at its size cap (it ran, but `value` is `None`) |
 | `turn.preconnect` | the pre-connect captures, read out of the tool result the platform injects |
 | `turn.result_of(name)` | an earlier result, to read back rather than call again |
 | `turn.answer_following("your postcode?")` | a value you collected over several turns |
@@ -820,12 +839,14 @@ alone:
   answer back out of the transcript instead of asking for it again. A failed
   call comes back with coaching text appended, and after three consecutive
   failures the platform tells you to stop retrying.
-- **Arguments must be values the call established.** The platform checks each
-  one against the conversation and refuses to run the tool otherwise, returning
-  a note that says so: "The call has not established a value for `account_ref` …
-  Never invent a value." An empty string counts as invented, so omit an unknown
-  optional argument rather than sending `""`. Values the caller spoke, or that
-  an earlier tool returned, are accepted.
+- **Your arguments are not checked.** When the agent's LLM is yours, the
+  platform runs your tool call as sent. It does not check a value against the
+  conversation, and it does not check that a required argument is present. So
+  a missing argument reaches your tool as a missing argument: validate there.
+- **A failed tool's error body is passed through as it was sent**, followed by
+  a bracketed note that starts "[The tool did not run". A JSON error body
+  therefore parses as cleanly as a success, and only that note tells them
+  apart. `ToolResult.ran` reads it for you.
 - **Pre-connect captures arrive here too**, as an `aai_pre_connect_context` tool
   result at the top of the transcript:
   `{"variables": {"account_ref": "…", "consumer_first_name": "…"}}`.

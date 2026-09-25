@@ -6,9 +6,9 @@ That is the seam to reach for when a script has to be exact, or when you want
 your own logic and a model in the same call.
 
 Between you and that seam is contract detail: Server-Sent Events, a transcript
-whose shape is not obvious, and a platform that refuses tool calls carrying
-values nobody said. This module is only that detail. How you decide what to say
-is yours; there is no framework here.
+whose shape is not obvious, and tool results that arrive as text you have to
+read back. This module is only that detail. How you decide what to say is
+yours; there is no framework here.
 
     from assemblyai_agents.byo import Turn, call_tool, say, silence, stream
 
@@ -19,7 +19,7 @@ is yours; there is no framework here.
             return say("Could you give me your full name?")
         return call_tool("verify_caller", caller_said=turn.caller_said)
 
-    # on POST /v1/chat/completions, in whatever framework you use:
+    # on POST <your base_url>/chat/completions, in whatever framework you use:
     turn = Turn.from_request(body)
     return StreamingResponse(stream(turn, decide(turn)), media_type="text/event-stream")
 
@@ -39,6 +39,15 @@ from typing import Any, Iterator, Optional, Sequence
 # whatever the pre-connect requests captured.
 PRE_CONNECT_TOOL = "aai_pre_connect_context"
 
+# The opening of the guidance the platform appends to every failed result. Your
+# tool endpoint's error body reaches the transcript as it was sent, so a JSON
+# error body parses as cleanly as a success and only this marker tells them
+# apart.
+_FAILED_MARKER = "[The tool did not run"
+
+# What the platform appends when it cuts a result short at its size cap.
+_TRUNCATED_MARKER = "\n…[truncated]"
+
 _MARKER_LENGTH = 40
 
 
@@ -52,6 +61,12 @@ class ToolResult:
     `ran` is the distinction that matters. A refused or failed call comes back
     as prose rather than the tool's own JSON, so a payment tool that was never
     reached must not be reported to the caller as a declined card.
+
+    A tool that returns a plain string reads as not run, because the platform's
+    refusals are plain strings too: return a dict from any tool you read back
+    here. A result the platform cut short at its size cap did run, but its
+    `value` is None because the JSON no longer parses, and its `note` is
+    "truncated".
     """
 
     name: str
@@ -73,9 +88,16 @@ def _read_result(payload: Any) -> tuple:
     if not isinstance(payload, str):
         return payload, True, ""
     head = payload.split("\n[")[0]
+    if _FAILED_MARKER in payload:
+        return None, False, head.strip()
+    if _TRUNCATED_MARKER in payload:
+        return None, True, "truncated"
     try:
         return json.loads(head), True, ""
     except ValueError:
+        # The platform's own gates (a duplicate call, a keypad value sent as
+        # text) answer in unmarked prose, and a tool that returns a plain string
+        # looks the same, so the two cannot be told apart.
         return None, False, head.strip()
 
 
@@ -126,8 +148,7 @@ class Turn:
             last_result_at = index
             if name == PRE_CONNECT_TOOL and isinstance(value, dict):
                 # The platform ran the pre-connect requests itself and put what
-                # they captured here. These count as values the call
-                # established, so they are safe to pass to other tools.
+                # they captured here.
                 variables = value.get("variables")
                 if isinstance(variables, dict):
                     preconnect = dict(variables)
@@ -211,8 +232,10 @@ def _caller_said(messages: Sequence[dict]) -> str:
 
     Speech arrives as a `user` message. A turn injected by a test driver
     through `create_reply(instructions=...)` arrives as a `system` message
-    quoting it, while the platform's own notes use single quotes and so never
-    match. A real `user` message always wins.
+    quoting it. A real `user` message always wins, because the platform's own
+    notes can hold double quotes too: a completed call is described with its
+    arguments written out as Python values, and a string argument can contain
+    one.
     """
     quoted = ""
     for message in reversed(list(messages)[1:]):
@@ -263,18 +286,18 @@ def silence() -> Silence:
 
 
 def call_tool(name: str, *, saying: Optional[str] = None, **arguments: Any) -> Call:
-    """Run one of the agent's tools.
+    """Run one of the agent's tools, with the arguments exactly as given.
 
-    Arguments whose value is None or empty are dropped, because the platform
-    refuses a call carrying a value the conversation never established and an
-    empty string counts as invented. Pass the caller's own words and let the
-    tool do the reading, or pass a value an earlier tool returned.
+    Nothing is dropped or checked on the way out. The platform does not check
+    your LLM's arguments against the conversation, or even for required ones,
+    so a value you leave out reaches your tool as a missing argument and an
+    empty string reaches it as an empty string. Validate in the tool.
 
-    ``saying`` is spoken while the tool runs. The tool call goes out first and
-    the words follow it in the same response, so the tool's clock starts before
-    the first syllable rather than after the last one. Without it a tool that
-    takes a few seconds is a few seconds of silence, which a caller reads as a
-    dropped call.
+    ``saying`` is spoken while the tool runs. The platform starts the tool once
+    the whole response has arrived and plays the words at the same time, so
+    where the call sits in the response makes no difference to when the tool
+    starts. Without a line, a tool that takes a few seconds is a few seconds of
+    silence, which a caller reads as a dropped call.
 
     One line is all a single call buys: the response has to end before the
     platform acts on any of it, so there is no way to add more while the tool
@@ -286,25 +309,15 @@ def call_tool(name: str, *, saying: Optional[str] = None, **arguments: Any) -> C
 
         def decide(turn):
             done = turn.pending and turn.pending.name == "check_balance"
-            if done and turn.pending.value.get("finished"):
-                return say(f"Right, your balance is {turn.pending.value['balance']}.")
-            stage = int((turn.pending.value or {}).get("stage", 0)) + 1 if done else 1
+            if done and turn.pending.get("finished"):
+                return say(f"Right, your balance is {turn.pending.get('balance')}.")
+            stage = int(turn.pending.get("stage", 0)) + 1 if done else 1
             return call_tool("check_balance", saying=LINES[stage], stage=str(stage))
 
     Measured on a live call against a ten-second job: silence after the caller's
     question was 10s with no line, 8s with one, and 2s split into three stages.
     """
-    return Call(name, established(**arguments), saying=saying)
-
-
-def established(**arguments: Any) -> dict:
-    """Drop arguments the call has not established.
-
-    The platform checks every argument against the conversation before running
-    a tool and refuses the call otherwise, saying so: "the call has not
-    established a value for X … Never invent a value."
-    """
-    return {name: value for name, value in arguments.items() if value not in (None, "")}
+    return Call(name, dict(arguments), saying=saying)
 
 
 # --------------------------------------------------------------------------- answering
@@ -344,8 +357,9 @@ def stream(turn: Turn, answer: Any, *, chunk_words: bool = True) -> Iterator[str
         }
 
     if isinstance(answer, Call):
-        # Order is cosmetic -- the platform reads the whole response before it
-        # acts -- but the call reads first because it is the point of the turn.
+        # Order is cosmetic: the platform surfaces the call only at
+        # `finish_reason`, so putting it first changes nothing about when the
+        # tool starts. It reads first because it is the point of the turn.
         yield frame(chunk({"role": "assistant", "tool_calls": [_wire_call(answer)]}))
         for piece in _spoken_pieces(answer.saying, chunk_words):
             yield frame(chunk({"content": piece}))
