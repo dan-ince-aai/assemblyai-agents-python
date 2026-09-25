@@ -51,23 +51,30 @@ class FakeStdout(io.StringIO):
         return self._tty
 
 
-def _deployment(status: str, detail=None) -> dict:
+def _deployment(
+    status: str,
+    detail=None,
+    deployment_type: str = "tools",
+    service_url=None,
+) -> dict:
     return {
         "id": DEPLOYMENT_ID,
         "agent_id": AGENT_ID,
+        "deployment_type": deployment_type,
         "status": status,
+        "service_url": service_url,
         "detail": detail,
         "created_at": "2026-09-18T10:00:00Z",
         "updated_at": "2026-09-18T10:00:00Z",
     }
 
 
-def _created(status: str = "pending"):
-    return (201, _deployment(status), None)
+def _created(status: str = "pending", **kwargs):
+    return (201, _deployment(status, **kwargs), None)
 
 
-def _polled(status: str, detail=None):
-    return (200, _deployment(status, detail), None)
+def _polled(status: str, detail=None, **kwargs):
+    return (200, _deployment(status, detail, **kwargs), None)
 
 
 def _run_deploy(make_client, recorder: Recorder, responses: list, **overrides):
@@ -85,6 +92,7 @@ def _run_deploy(make_client, recorder: Recorder, responses: list, **overrides):
         sleep=clock.sleep,
         monotonic=clock.monotonic,
         interactive=overrides.get("interactive", False),
+        deployment_type=overrides.get("deployment_type", "tools"),
         base_url=overrides.get("base_url", "https://agents.test.local"),
     )
     return code, out.getvalue(), errs.getvalue(), clock
@@ -102,7 +110,11 @@ def test_successful_deploy_uploads_the_source_and_exits_zero(make_client, record
     post = recorder.requests[0]
     assert post.method == "POST"
     assert post.url.path == "/v1/agent-deployments"
-    assert json.loads(post.content) == {"agent_id": AGENT_ID, "source": SOURCE}
+    assert json.loads(post.content) == {
+        "agent_id": AGENT_ID,
+        "deployment_type": "tools",
+        "source": SOURCE,
+    }
     assert "Deployed in" in out
     assert AGENT_ID in out
     assert "tools.py" in out
@@ -300,6 +312,99 @@ def test_an_empty_module_is_refused_locally(tmp_path):
 
     with pytest.raises(_cli.UsageError):
         _cli.read_source(str(module))
+
+
+# ------------------------------------------------- deploy: service kind
+
+
+SERVICE_URL = "https://aai-sandbox--svc-0123456789abcdef0123456789abcdef.modal.run"
+
+
+def test_a_service_deploy_asks_for_the_service_kind(make_client, recorder):
+    code, _, errs, _ = _run_deploy(
+        make_client,
+        recorder,
+        [
+            _created(deployment_type="service"),
+            _polled("ready", deployment_type="service", service_url=SERVICE_URL),
+        ],
+        deployment_type="service",
+    )
+
+    assert code == 0
+    assert json.loads(recorder.requests[0].content)["deployment_type"] == "service"
+    assert errs == ""
+
+
+def test_a_service_deploy_prints_the_address_it_answers_on(make_client, recorder):
+    _, out, _, _ = _run_deploy(
+        make_client,
+        recorder,
+        [
+            _created(deployment_type="service"),
+            _polled("ready", deployment_type="service", service_url=SERVICE_URL),
+        ],
+        deployment_type="service",
+    )
+
+    # The address is the whole point of the kind: without it the customer has
+    # nothing to point the agent's model at.
+    assert SERVICE_URL in out
+    assert f"{SERVICE_URL}/v1" in out
+    assert "AssemblyAI is now running the tools" not in out
+
+
+def test_a_ready_service_with_no_address_says_so_rather_than_printing_a_blank(
+    make_client, recorder
+):
+    code, out, errs, _ = _run_deploy(
+        make_client,
+        recorder,
+        [
+            _created(deployment_type="service"),
+            _polled("ready", deployment_type="service"),
+        ],
+        deployment_type="service",
+    )
+
+    assert code == 0
+    assert "reported no " in errs
+    assert "https://" not in out
+
+
+def test_a_container_that_refused_to_serve_is_explained(make_client, recorder):
+    code, _, errs, _ = _run_deploy(
+        make_client,
+        recorder,
+        [
+            _created(deployment_type="service"),
+            _polled(
+                "service_unhealthy",
+                "no application was found in the deployed module.",
+                deployment_type="service",
+            ),
+        ],
+        deployment_type="service",
+    )
+
+    assert code == 1
+    assert "service_unhealthy" in errs
+    assert "module-level `app`" in errs
+    assert "no application was found in the deployed module." in errs
+
+
+def test_a_tools_deploy_still_sends_the_tools_kind_and_says_tools(
+    make_client, recorder
+):
+    # The default has to stay what it always was, or every existing user's
+    # build job changes behaviour on an upgrade.
+    code, out, _, _ = _run_deploy(
+        make_client, recorder, [_created(), _polled("ready")]
+    )
+
+    assert code == 0
+    assert json.loads(recorder.requests[0].content)["deployment_type"] == "tools"
+    assert "AssemblyAI is now running the tools in tools.py" in out
 
 
 # ------------------------------------------------------------ secrets set
@@ -649,6 +754,42 @@ def test_status_prints_the_detail_in_full(make_client, recorder):
     assert TRACEBACK in out
 
 
+def test_status_prints_the_kind_and_a_service_address(make_client, recorder):
+    _, out, _ = _run_status(
+        make_client,
+        recorder,
+        [_polled("ready", deployment_type="service", service_url=SERVICE_URL)],
+    )
+
+    assert "service" in out
+    assert SERVICE_URL in out
+
+
+def test_status_reads_an_older_row_with_no_kind_as_tools(make_client, recorder):
+    # Deployments made before the kind existed carry no field, and every one of
+    # them was a tools deployment.
+    body = _deployment("ready")
+    del body["deployment_type"]
+    del body["service_url"]
+
+    _, out, _ = _run_status(make_client, recorder, [(200, body, None)])
+
+    assert "tools" in out
+    assert "address" not in out
+
+
+def test_the_listing_has_a_kind_column(make_client, recorder):
+    page = _deployments_page(["d1"])
+    page[1]["agent_deployments"][0]["deployment_type"] = "service"
+
+    # The header is printed to a terminal only, so the column name is only
+    # assertable on an interactive run.
+    _, out, _ = _run_list(make_client, recorder, [page], interactive=True)
+
+    assert "TYPE" in out
+    assert "service" in out
+
+
 def test_a_missing_deployment_exits_one(make_client, recorder):
     code, _, errs = _run_status(
         make_client, recorder, [(404, err("agent_deployment_not_found"), None)]
@@ -797,3 +938,26 @@ def test_a_limit_outside_the_api_range_is_refused_by_the_parser():
     for bad in ["0", "201", "abc"]:
         with pytest.raises(SystemExit):
             _cli.build_parser().parse_args(["deployments", "list", "--limit", bad])
+
+
+def test_the_deploy_kind_defaults_to_tools():
+    # An existing user who never passes --type has to keep the behaviour they
+    # already have.
+    args = _cli.build_parser().parse_args(["deploy", "tools.py", "--agent", AGENT_ID])
+
+    assert args.deployment_type == "tools"
+
+
+def test_the_deploy_kind_can_be_a_service():
+    args = _cli.build_parser().parse_args(
+        ["deploy", "app.py", "--agent", AGENT_ID, "--type", "service"]
+    )
+
+    assert args.deployment_type == "service"
+
+
+def test_an_unknown_deploy_kind_is_refused_by_the_parser():
+    with pytest.raises(SystemExit):
+        _cli.build_parser().parse_args(
+            ["deploy", "app.py", "--agent", AGENT_ID, "--type", "webhook"]
+        )

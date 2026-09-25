@@ -30,6 +30,12 @@ MAX_EXCLUSIONS_SHOWN = 12
 
 STATUS_READY = "ready"
 
+# What the uploaded project is run as. `tools` is the default everywhere, so a
+# customer who has never heard of the other one is unaffected.
+TYPE_TOOLS = "tools"
+TYPE_SERVICE = "service"
+DEPLOYMENT_TYPES = (TYPE_TOOLS, TYPE_SERVICE)
+
 # Statuses are plain strings, never the generated `DeploymentStatus` enum: that
 # enum raises on a value it has never heard of, which would abort a deploy that
 # is running fine against a newer service.
@@ -38,6 +44,12 @@ FAILURE_EXPLANATIONS = {
     "no_tools_found": (
         "The module imported but defined no tools. Every tool is a function "
         "decorated with @tool(), and at least one has to be there."
+    ),
+    "service_unhealthy": (
+        "Your project imported but did not serve. A service is served from a "
+        "module-level `app` (or `application`) that takes the three ASGI "
+        "arguments — what `uvicorn main:app` runs, and what a FastAPI or "
+        "Starlette instance already is."
     ),
     "dependencies_failed": (
         "Your module's dependencies could not be installed. The resolver's own "
@@ -151,8 +163,8 @@ def read_source(path: str) -> str:
         raise UsageError(f"{path} is empty; there is nothing to deploy.")
     if len(source) > MAX_SOURCE_CHARACTERS:
         raise UsageError(
-            f"{path} is {len(source):,} characters. A tool module can be at most "
-            f"{MAX_SOURCE_CHARACTERS:,}."
+            f"{path} is {len(source):,} characters. A single module can be at "
+            f"most {MAX_SOURCE_CHARACTERS:,}; a project directory has no such cap."
         )
     return source
 
@@ -303,14 +315,22 @@ def deploy(
     sleep: Callable[[float], None],
     monotonic: Callable[[], float],
     interactive: bool,
+    deployment_type: str = TYPE_TOOLS,
     base_url: str = DEFAULT_BASE_URL,
 ) -> int:
-    print(f"Deploying {path} to agent {agent_id}.", file=out)
+    if deployment_type == TYPE_SERVICE:
+        print(f"Deploying {path} to agent {agent_id} as a service.", file=out)
+    else:
+        print(f"Deploying {path} to agent {agent_id}.", file=out)
     try:
         created: Any = client.request(
             "POST",
             DEPLOYMENTS_PATH,
-            json={"agent_id": agent_id, **upload},
+            json={
+                "agent_id": agent_id,
+                "deployment_type": deployment_type,
+                **upload,
+            },
             idempotent=True,
         )
     except APIError as exc:
@@ -354,14 +374,50 @@ def deploy(
     status = str(body.get("status"))
     if status == STATUS_READY:
         print(f"Deployed in {_format_elapsed(elapsed)}.", file=out)
-        print(
-            f"AssemblyAI is now running the tools in {path} for agent {agent_id}.",
-            file=out,
-        )
+        if deployment_type == TYPE_SERVICE:
+            _print_service_address(body.get("service_url"), path, agent_id, out, err)
+        else:
+            print(
+                f"AssemblyAI is now running the tools in {path} for agent "
+                f"{agent_id}.",
+                file=out,
+            )
         return 0
 
     _print_failure(status, body.get("detail"), deployment_id, elapsed, err)
     return 1
+
+
+def _print_service_address(
+    service_url: Optional[str], path: str, agent_id: str, out: TextIO, err: TextIO
+) -> None:
+    """Where the service answers, and the one thing to do with that address.
+
+    A ready service with no address is the server contradicting itself, so it is
+    reported rather than printed as an empty line; the deploy still succeeded,
+    and `deployments status` will show the address once it is written.
+    """
+    if not service_url:
+        print(
+            f"AssemblyAI is running {path} for agent {agent_id}, but reported no "
+            f"address for it. Read it with: {PROG} deployments status ID",
+            file=err,
+        )
+        return
+    print(f"AssemblyAI is now running {path} for agent {agent_id}.", file=out)
+    print("", file=out)
+    print(f"  {service_url}", file=out)
+    print("", file=out)
+    print(
+        "That address is stable across redeploys. Point the agent's model at it "
+        "to route the conversation through your own code:",
+        file=out,
+    )
+    print(
+        f'  llm=LlmConfigRequest(base_url="{service_url}/v1", model="...", '
+        f'api_key="...")',
+        file=out,
+    )
 
 
 def check_secret_name(name: str) -> None:
@@ -572,16 +628,19 @@ def deployments_list(
 
     live = _live_deployment_ids(client, agent_id) if agent_id else set()
 
-    headers = ("DEPLOYMENT", "AGENT", "STATUS", "CREATED")
+    headers = ("DEPLOYMENT", "AGENT", "TYPE", "STATUS", "CREATED")
     rows = []
     for d in deployments:
         status = str(d.get("status", ""))
+        # The serving marker is a `tools` fact: it comes from a tool on the agent
+        # naming this deployment, and a service attaches no tools.
         if str(d.get("id")) in live:
             status = f"{status} (serving)"
         rows.append(
             [
                 str(d.get("id", "")),
                 str(d.get("agent_id", "")),
+                str(d.get("deployment_type") or TYPE_TOOLS),
                 status,
                 str(d.get("created_at", "")),
             ]
@@ -616,7 +675,11 @@ def deployments_status(
     status = str(body.get("status"))
     print(f"Deployment {body.get('id', deployment_id)}", file=out)
     print(f"  agent    {body.get('agent_id')}", file=out)
+    print(f"  type     {body.get('deployment_type') or TYPE_TOOLS}", file=out)
     print(f"  status   {status}", file=out)
+    service_url = body.get("service_url")
+    if service_url:
+        print(f"  address  {service_url}", file=out)
     print(f"  created  {body.get('created_at')}", file=out)
     print(f"  updated  {body.get('updated_at')}", file=out)
 
@@ -699,9 +762,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
-            "Deploy tool code for AssemblyAI to run (managed tools). Tools your "
-            "own process or your own server answers are configured in Python, "
-            "not here."
+            "Deploy your code for AssemblyAI to run: either the tools an agent "
+            "calls during a conversation (managed tools), or your whole web "
+            "application as a long-running service the agent's model points at. "
+            "Tools your own process or your own server answers are configured "
+            "in Python, not here."
         ),
         epilog=(
             f"Your API key is read from the {ENV_API_KEY} environment variable. "
@@ -714,19 +779,25 @@ def build_parser() -> argparse.ArgumentParser:
     deploy_parser = subparsers.add_parser(
         "deploy",
         parents=[common],
-        help="Upload your tool code to an agent and wait for it to go live.",
+        help="Upload your code to an agent and wait for it to go live.",
         description=(
             f"Uploads PATH to AssemblyAI and waits for the deployment to "
-            f"finish. AssemblyAI runs the tools in it. PATH is either one "
-            f"Python file, or a project directory with {_project.ENTRY_NAME} at "
-            f"the top of it — your tools are read from that file, and every "
-            f"other module in the directory is importable from it. The code has "
-            f"to import cleanly and define at least one function decorated with "
-            f"@tool(). If it fails to import, the error from your own code is "
-            f"printed. Deploying replaces the tools AssemblyAI runs for this "
-            f"agent and leaves tools your own server answers alone. Exits 0 only "
-            f"when the agent is serving the new tools, so a build job can depend "
-            f"on the exit status."
+            f"finish. PATH is either one Python file, or a project directory "
+            f"with {_project.ENTRY_NAME} at the top of it — that file is the "
+            f"entry module, and every other module in the directory is "
+            f"importable from it. It has to import cleanly; if it does not, the "
+            f"error from your own code is printed. "
+            f"--type tools (the default) reads the tools out of the entry "
+            f"module and has AssemblyAI run them during a call: at least one "
+            f"function decorated with @tool() has to be there, and deploying "
+            f"replaces the tools AssemblyAI runs for this agent while leaving "
+            f"tools your own server answers alone. "
+            f"--type service instead runs the project as a long-running web "
+            f"application and prints the address it answers on; the entry "
+            f"module has to expose a module-level `app` (or `application`), and "
+            f"no tools are read from it. "
+            f"Exits 0 only when the deployment is live, so a build job can "
+            f"depend on the exit status."
         ),
         epilog=(
             f"A directory is uploaded whole, minus these: every .env and .env.* "
@@ -748,8 +819,20 @@ def build_parser() -> argparse.ArgumentParser:
         "path",
         metavar="PATH",
         help=(
-            f"Python file defining your tools, or a project directory with "
+            f"Python file to deploy, or a project directory with "
             f"{_project.ENTRY_NAME} at the top of it."
+        ),
+    )
+    deploy_parser.add_argument(
+        "--type",
+        dest="deployment_type",
+        choices=DEPLOYMENT_TYPES,
+        default=TYPE_TOOLS,
+        help=(
+            f"What AssemblyAI runs your code as: {TYPE_TOOLS} (the default) "
+            f"reads the @tool() functions out of it; {TYPE_SERVICE} runs the "
+            f"module-level `app` as a web service and reports its address. Not "
+            f"guessed from the code, because a project can hold both."
         ),
     )
     deploy_parser.add_argument(
@@ -817,10 +900,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     deployments_parser = subparsers.add_parser(
         "deployments",
-        help="Inspect and remove the tool code AssemblyAI is running.",
+        help="Inspect and remove the code AssemblyAI is running.",
         description=(
-            "Each deploy produces a deployment. These commands show which ones "
-            "exist, which one an agent is serving, and remove the ones you no "
+            "Each deploy produces a deployment, of either type. These commands "
+            "show which ones exist, which tools deployment an agent is serving, "
+            "where a service deployment answers, and remove the ones you no "
             "longer need."
         ),
     )
@@ -833,8 +917,11 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="List deployments, newest first.",
         description=(
-            "Lists deployments newest first. With --agent, the deployment that "
-            "agent is actually serving is marked. A status here is the stored "
+            "Lists deployments newest first. With --agent, the tools "
+            "deployment that agent is actually serving is marked; a service "
+            "deployment is never marked, because it attaches no tools. Read one "
+            "with `deployments status ID` to see where a service answers. A "
+            "status here is the stored "
             "one and is not re-checked for age, so a deployment whose build died "
             f"can keep reading pending; `{PROG} deployments status ID` is the "
             "read that settles it."
@@ -844,7 +931,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent",
         default=None,
         metavar="AGENT_ID",
-        help="Only this agent's deployments, and mark the one it is serving.",
+        help="Only this agent's deployments, and mark the tools one it is serving.",
     )
     deployments_list_parser.add_argument(
         "--limit",
@@ -930,6 +1017,7 @@ def run(
                 sleep=time.sleep,
                 monotonic=time.monotonic,
                 interactive=out.isatty(),
+                deployment_type=args.deployment_type,
                 base_url=args.base_url,
             )
 

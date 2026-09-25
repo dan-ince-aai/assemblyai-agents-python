@@ -6,9 +6,10 @@ import tarfile
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Tuple
 
-# The name the entry point has inside the upload. AssemblyAI reads the tools
-# from this file and imports it under a name of its own, so a sibling module can
-# import the other siblings but cannot import this one.
+# The name the entry point has inside the upload. AssemblyAI reads a tools
+# deployment's tools, and a service deployment's application, from this file,
+# and imports it under a name of its own, so a sibling module can import the
+# other siblings but cannot import this one.
 ENTRY_NAME = "main.py"
 
 # Every limit below is the one the API enforces, checked here so an oversized
@@ -124,7 +125,7 @@ def read_project(root: Path) -> Project:
             if len(files) >= MAX_FILES:
                 raise ProjectError(
                     f"The project holds more than {MAX_FILES} files, which is "
-                    f"the most AssemblyAI stores. Exclude what the tools do not "
+                    f"the most AssemblyAI stores. Exclude what the deployment does not "
                     f"need with a {IGNORE_FILE} file beside {ENTRY_NAME}."
                 )
             files[child] = body
@@ -135,13 +136,14 @@ def read_project(root: Path) -> Project:
 
     if not files:
         raise ProjectError(
-            f"{root} holds no files to deploy. It needs a {ENTRY_NAME} defining "
-            f"your tools."
+            f"{root} holds no files to deploy. It needs a {ENTRY_NAME} holding "
+            f"your tools, or your application."
         )
     if ENTRY_NAME not in files:
         raise ProjectError(
-            f"{root} has no {ENTRY_NAME}. That file is the one your tools are "
-            f"read from, and it has to sit at the top of the project directory."
+            f"{root} has no {ENTRY_NAME}. That file is the one your tools — or, "
+            f"for a service, your application — are read from, and it has to "
+            f"sit at the top of the project directory."
         )
     return Project(
         files=files,

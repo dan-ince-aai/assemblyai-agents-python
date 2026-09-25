@@ -28,6 +28,11 @@ answers the requests the platform sends. That is the whole remit.
   value there — a tunnel today, a deployment later. The ngrok helper is a script
   in the examples repository and is deleted when agent code can be deployed
   directly.
+- **`assemblyai_agents/models/` is generated, not written.** `rest.py` and
+  `ws.py` come out of datamodel-codegen against the API's OpenAPI document, so
+  a new wire field arrives by regenerating them from the current spec rather
+  than by hand. Anything hand-written about that field — a `VoiceAgent` field,
+  a CLI flag, a line of README — sits outside `models/`.
 - **No new vocabulary for a wire field.** Every `VoiceAgent` field maps onto
   `AgentCreateRequest`, so `to_request()` is inspectable and assertable without
   a network call. A shortcut that relocates a field is a second vocabulary to

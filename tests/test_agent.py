@@ -150,6 +150,7 @@ def test_the_update_request_sends_the_whole_declaration():
         system_prompt=PROMPT,
         greeting="Pizza Palace — what can I get you?",
         voice=VoiceConfig(voice_id="ivy"),
+        platform_tools_enabled=True,
     )
 
 
@@ -216,3 +217,20 @@ def test_the_same_name_may_be_declared_twice_in_one_process():
     # (a test parametrised over voices, say) no longer collide.
     VoiceAgent(name="Pizza Line", voice="ivy", system_prompt=PROMPT)
     VoiceAgent(name="Pizza Line", voice="james", system_prompt=PROMPT)
+
+
+def test_platform_tools_are_on_unless_turned_off():
+    agent = VoiceAgent(name="N", voice="ivy", system_prompt=PROMPT)
+
+    assert agent.to_request().platform_tools_enabled is True
+
+
+def test_turning_platform_tools_off_reaches_the_wire_model():
+    # The one reason to set it: a model endpoint that cannot answer with a tool
+    # call at all, where our own tool in the list is a liability.
+    agent = VoiceAgent(
+        name="N", voice="ivy", system_prompt=PROMPT, platform_tools_enabled=False
+    )
+
+    assert agent.to_request().platform_tools_enabled is False
+    assert agent.to_update_request().platform_tools_enabled is False
