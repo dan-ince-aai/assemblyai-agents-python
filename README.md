@@ -274,8 +274,30 @@ def schedule_delivery(
   caller waits through), `http=` (where the platform calls, see below),
   `response_instructions` (static text appended to the model's guidance after
   success/failure), `dtmf_collected_arguments` (collect a parameter from the
-  phone keypad instead of speech), and `execution_mode` (only `interactive` is
-  available in v1).
+  phone keypad instead of speech), `session_update` (let the tool's response
+  retune speech recognition for the rest of the call, see below), and
+  `execution_mode` (only `interactive` is available in v1).
+
+An `http=` tool declared with `session_update=ToolSessionUpdate(enabled=True)`
+may answer `{"result": ..., "session": {...}}`. The agent reads `result`; the
+`session` block is stripped before the agent sees it and reconfigures speech
+recognition from the caller's next utterance. Only `input.keyterms`,
+`input.transcription_mode`, `input.continuous_partials`,
+`input.transcription_prompt` and `input.turn_detection.interruption_delay` may
+be set; anything else is refused and the whole block is dropped. It is
+best-effort: a refused block shows up in logs and metrics, not back to the tool.
+The option is off by default, so a tool that never asked for it cannot
+reconfigure anything.
+
+```python
+from assemblyai_agents.models.rest import ToolSessionUpdate
+
+@tool(http=hosted("/tools/switch_language"), session_update=ToolSessionUpdate(enabled=True))
+def switch_language(language: str) -> dict:
+    """Switch to the language the caller asks for."""
+    return {"result": f"Switched to {language}.",
+            "session": {"input": {"transcription_prompt": f"The caller speaks {language}."}}}
+```
 
 Calling a `Tool` calls the underlying function unchanged, so tools stay directly
 testable. `tool.definition()` returns the wire model and `tool.spec` the parsed
@@ -379,12 +401,34 @@ $ assemblyai-agents deployments delete agentdep_cc3b6476...
 ```
 
 `deployments status` exits 0 when the deployment is ready, 1 when it failed and 3
-while it is still running. Reach for it after a deploy you stopped waiting for: a
+while it is still running. A status newer than your installed package also exits
+1, with a message asking you to upgrade; `deploy` stops waiting on one the same
+way rather than guessing whether it is finished. Reach for it after a deploy you stopped waiting for: a
 listing reports each stored status without re-checking its age, so that single
 read is what settles a deployment whose build died.
 
 Every command takes `--base-url` after the subcommand, defaulting to
 `ASSEMBLYAI_BASE_URL` and then to the production host.
+
+Everything the command line does is also available from Python, on both
+clients, through `client.deployments` (`create`, `list`, `get`, `delete`) and
+`client.tool_secrets` (`set`, `list`, `delete`). They take and return the typed
+models in `assemblyai_agents.models.rest`. A delete that the API refuses raises
+rather than reading as success: `NotFoundError` for an unknown ID or name, and
+`ConflictError` for a deployment that is still building or still serving an
+agent's tools.
+
+```python
+from assemblyai_agents.models.rest import CreateAgentDeploymentRequest, SetToolSecretRequest
+
+client.tool_secrets.set("orders_api_key", SetToolSecretRequest(value=key))
+created = client.deployments.create(
+    CreateAgentDeploymentRequest(agent_id="agent_b4c9e0d2...", source=open("tools.py").read())
+)
+print(client.deployments.get(created.id).status)
+for deployment in client.deployments.list(agent_id="agent_b4c9e0d2..."):
+    print(deployment.id, deployment.status.value)
+```
 
 ### Deploying an application instead of tools
 
@@ -438,7 +482,8 @@ receive the model's arguments only.
 
 Up to two HTTPS calls made before a **phone call** is answered, typically to
 look the caller up in your CRM. Values captured from one can be sent to the
-next and can override the greeting. The captured values are exposed to the
+next, and a response can override the greeting and connect-time session
+settings. The captured values are exposed to the
 model through the `aai_pre_connect_context` platform tool. Like transfer
 targets and keypad input, pre-connect is a telephony feature and is inert on a
 WebSocket session.
@@ -454,19 +499,39 @@ agent = VoiceAgent(
             headers=[Header(name="Authorization", value="Bearer ...")],
             returns=[Captured(name="customer_tier", path="customer.tier", default="standard")],
             timeout_ms=400,
-            allow_overrides=True,   # a top-level "greeting" key in the response replaces the greeting
+            allow_overrides=["greeting"],   # a top-level "greeting" key in the response replaces the greeting
         ),
-        PreConnectRequest(url="https://api.example.com/pre-connect/tier", sends=["customer_tier"]),
+        PreConnectRequest(
+            url="https://api.example.com/pre-connect/tier",
+            sends=["caller_number", "customer_tier"],
+            allow_overrides=["greeting", "session"],
+            on_failure="reject",   # if this lookup fails, the call is refused
+        ),
     ],
 )
 ```
 
 Your endpoint has to answer within the request's timeout (800 ms ceiling per
-request; `timeout_ms` only lowers it). Pre-connect **fails open**: a timeout or
-error means the call proceeds without the values. A response with a top-level
-`"reject": true` aborts the call, which is the one thing a pre-connect endpoint
-can do to stop a conversation. `sends` may only name values captured by an
-earlier entry; the SDK checks the order before deploying.
+request; `timeout_ms` only lowers it). What a failure does is each entry's own
+choice. With `on_failure="continue"`, the default, a timeout or error means the
+call proceeds without that entry's values. With `on_failure="reject"` the same
+failure refuses the caller's call, which is what an entry that sets the voice or
+greeting wants: answering with the stored defaults would greet the caller as the
+wrong persona. A successful response with a top-level `"reject": true` also
+aborts the call.
+
+`allow_overrides` lists what the response may replace. `"greeting"` lets a
+top-level `greeting` key replace the spoken greeting. `"session"` lets a
+top-level `session` object carry connect-time settings, such as transcription
+settings and the voice, applied before the first word; a field the platform does
+not permit there is refused rather than dropped. The older spelling
+`allow_overrides=True` still works and means `["greeting"]`.
+
+`sends` is opt-in per entry. It may name the platform's call facts
+(`caller_number`, `dialed_number`, `direction`, `agent_id` and `session_id`) in
+any entry, and a value captured by an earlier entry; the SDK checks the order
+before deploying. A call fact the platform does not have, such as a withheld
+caller number, is left out of the payload rather than sent blank.
 
 ## Phone calls
 
@@ -910,7 +975,7 @@ except NotFoundError as exc:
   to `max_retries` (default 3) with exponential backoff and jitter, honouring
   `Retry-After` up to 60 s. Connection errors are retried the same way.
 - **Idempotency.** Calls that create billable side effects
-  (`calls.create`, phone number purchase and import) mint an `Idempotency-Key`
+  (`calls.create`, `deployments.create`, phone number purchase and import) mint an `Idempotency-Key`
   once per logical request and reuse it across retries. Pass your own via
   `headers={"Idempotency-Key": ...}` on `client.request` to control it.
 - **Escape hatch.** `client.request(method, path, json=..., params=...)`
@@ -957,7 +1022,8 @@ pin the exact payload a declaration produces.
 ## Sync and async
 
 `Client` and `AsyncClient` expose the same resources (`agents`, `sessions`,
-`calls`, `phone_numbers`, `tokens`, `webhooks`, `builtin_tools`) with the same
+`calls`, `phone_numbers`, `tokens`, `webhooks`, `builtin_tools`, `deployments`,
+`tool_secrets`) with the same
 method names. The realtime WebSocket (`sessions.connect`, `AgentConnection`) is
 async only. Both clients are context managers and release their connection
 pools on exit.

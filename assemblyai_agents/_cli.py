@@ -13,6 +13,7 @@ from . import _project
 from ._client import Client
 from ._config import DEFAULT_BASE_URL, ENV_API_KEY
 from ._exceptions import APIError
+from .models.rest import DeploymentStatus
 
 ENV_AGENT_ID = "ASSEMBLYAI_AGENT_ID"
 ENV_BASE_URL = "ASSEMBLYAI_BASE_URL"
@@ -36,9 +37,9 @@ TYPE_TOOLS = "tools"
 TYPE_SERVICE = "service"
 DEPLOYMENT_TYPES = (TYPE_TOOLS, TYPE_SERVICE)
 
-# Statuses are plain strings, never the generated `DeploymentStatus` enum: that
-# enum raises on a value it has never heard of, which would abort a deploy that
-# is running fine against a newer service.
+# Statuses are read as plain strings rather than parsed into the generated
+# `DeploymentStatus` enum, so a status this version has never heard of is
+# reported in words instead of as a traceback.
 FAILURE_EXPLANATIONS = {
     "import_failed": "Your tool module did not import.",
     "no_tools_found": (
@@ -64,10 +65,14 @@ FAILURE_EXPLANATIONS = {
     ),
 }
 
-# The statuses the service treats as not yet settled. A status this version has
-# never heard of is treated as unsettled too, so a newer service can add one
-# without this command calling a running deployment a failure.
+# The statuses the service treats as not yet settled.
 PENDING_STATUSES = frozenset({"pending", "building"})
+
+# Every status this version knows the meaning of. Anything else came from a
+# service newer than this package, and guessing whether it is settled would
+# either abandon a working deploy or wait forever on a dead one, so the command
+# stops and asks for an upgrade instead.
+KNOWN_STATUSES = frozenset(member.value for member in DeploymentStatus)
 
 FIRST_POLL_SECONDS = 1.0
 MAX_POLL_SECONDS = 5.0
@@ -231,6 +236,14 @@ def _print_api_error(exc: APIError, err: TextIO) -> None:
         print(f"Request ID: {exc.request_id}", file=err)
 
 
+def _print_unknown_status(status: str, err: TextIO) -> None:
+    print(
+        f"AssemblyAI reported status {status!r}, which this version of {PROG} "
+        f"does not know. Upgrade the assemblyai-agents package and ask again.",
+        file=err,
+    )
+
+
 def _print_failure(
     status: str,
     detail: Optional[str],
@@ -278,7 +291,11 @@ def _wait_for_deployment(
         status = str(body.get("status"))
         elapsed = monotonic() - started
         progress.update(status, elapsed)
-        if status == STATUS_READY or status in FAILURE_EXPLANATIONS:
+        if (
+            status == STATUS_READY
+            or status in FAILURE_EXPLANATIONS
+            or status not in KNOWN_STATUSES
+        ):
             return body, elapsed
         if elapsed >= WAIT_LIMIT_SECONDS:
             return body, elapsed
@@ -372,10 +389,20 @@ def deploy(
     progress.finish()
 
     status = str(body.get("status"))
+    if status not in KNOWN_STATUSES:
+        _print_unknown_status(status, err)
+        print(
+            f"Deployment {deployment_id} was not cancelled and may still finish.",
+            file=err,
+        )
+        print(f"Ask again with: {PROG} deployments status {deployment_id}", file=err)
+        return 1
     if status == STATUS_READY:
         print(f"Deployed in {_format_elapsed(elapsed)}.", file=out)
         if deployment_type == TYPE_SERVICE:
-            _print_service_address(body.get("service_url"), path, agent_id, out, err)
+            _print_service_address(
+                body.get("service_url"), deployment_id, path, agent_id, out, err
+            )
         else:
             print(
                 f"AssemblyAI is now running the tools in {path} for agent "
@@ -389,7 +416,12 @@ def deploy(
 
 
 def _print_service_address(
-    service_url: Optional[str], path: str, agent_id: str, out: TextIO, err: TextIO
+    service_url: Optional[str],
+    deployment_id: str,
+    path: str,
+    agent_id: str,
+    out: TextIO,
+    err: TextIO,
 ) -> None:
     """Where the service answers, and the one thing to do with that address.
 
@@ -400,7 +432,8 @@ def _print_service_address(
     if not service_url:
         print(
             f"AssemblyAI is running {path} for agent {agent_id}, but reported no "
-            f"address for it. Read it with: {PROG} deployments status ID",
+            f"address for it. Read it with: {PROG} deployments status "
+            f"{deployment_id}",
             file=err,
         )
         return
@@ -557,7 +590,7 @@ def secrets_delete(
     err: TextIO,
 ) -> int:
     try:
-        client.request("DELETE", f"{SECRETS_PATH}/{name}")
+        client.tool_secrets.delete(name)
     except APIError as exc:
         if exc.status == 404:
             print(f"There is no secret named {name} on this account.", file=err)
@@ -699,9 +732,10 @@ def deployments_status(
         print("", file=out)
         print(explanation, file=out)
         return 1
-    # A status this version has never heard of is not called a failure; a newer
-    # service may have added another in-progress state.
-    return PENDING_EXIT_CODE
+    # Every known status is handled above, so this one is newer than the package.
+    print("", file=err)
+    _print_unknown_status(status, err)
+    return 1
 
 
 def deployments_delete(
@@ -712,7 +746,7 @@ def deployments_delete(
     err: TextIO,
 ) -> int:
     try:
-        client.request("DELETE", f"{DEPLOYMENTS_PATH}/{deployment_id}")
+        client.deployments.delete(deployment_id)
     except APIError as exc:
         if exc.status == 404:
             print(f"There is no deployment {deployment_id} on this account.", file=err)
@@ -956,10 +990,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read one deployment and exit 0 ready, 1 failed, 3 still running.",
         description=(
             "Reads one deployment and reports it on the exit status: 0 when it "
-            "is ready, 1 when it failed, 3 when it is still running. Unlike a "
-            "listing, this read re-checks a pending deployment's age, so it is "
-            "what resolves one whose build died. Use it after a deploy you "
-            "stopped waiting for."
+            "is ready, 1 when it failed, 3 when it is still running. A status "
+            "newer than this package also exits 1, with a request to upgrade. "
+            "Unlike a listing, this read re-checks a pending deployment's age, "
+            "so it is what resolves one whose build died. Use it after a deploy "
+            "you stopped waiting for."
         ),
     )
     deployments_status_parser.add_argument(

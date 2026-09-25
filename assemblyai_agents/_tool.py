@@ -27,6 +27,7 @@ from .models.rest import (
     PlaintextHttpToolConfig,
     PlaintextToolDefinition,
     ResponseInstructions,
+    ToolSessionUpdate,
 )
 
 # The server's default for a stored tool. Set it lower on
@@ -80,6 +81,7 @@ class ToolSpec:
     response_instructions: Optional[ResponseInstructions]
     http: Optional[PlaintextHttpToolConfig]
     dtmf_collected_arguments: Optional[list[DtmfCollectionProfile]]
+    session_update: Optional[ToolSessionUpdate]
     context_parameter: Optional[str]
     is_async: bool
     target: Callable
@@ -137,6 +139,7 @@ class Tool:
             response_instructions=spec.response_instructions,
             http=spec.http,
             dtmf_collected_arguments=spec.dtmf_collected_arguments,
+            session_update=spec.session_update,
         )
 
     def hosted_at(
@@ -193,6 +196,7 @@ def tool(
     response_instructions: Optional[ResponseInstructions] = None,
     http: Optional[PlaintextHttpToolConfig] = None,
     dtmf_collected_arguments: Optional[list[DtmfCollectionProfile]] = None,
+    session_update: Optional[ToolSessionUpdate] = None,
 ) -> Any:
     def decorate(target: Callable) -> Tool:
         return _declare(
@@ -202,6 +206,7 @@ def tool(
             response_instructions=response_instructions,
             http=http,
             dtmf_collected_arguments=dtmf_collected_arguments,
+            session_update=session_update,
         )
 
     if func is None:
@@ -223,6 +228,7 @@ def _declare(
     response_instructions: Any,
     http: Any,
     dtmf_collected_arguments: Any,
+    session_update: Any,
 ) -> Tool:
     name = target.__name__
     _reject_platform_name(name)
@@ -248,6 +254,7 @@ def _declare(
             response_instructions=response_instructions,
             http=http,
             dtmf_collected_arguments=dtmf_collected_arguments,
+            session_update=session_update,
             context_parameter=context_parameter(target, hints),
             is_async=inspect.iscoroutinefunction(target),
             target=target,

@@ -10,9 +10,12 @@ from assemblyai_agents import (
 )
 from assemblyai_agents.models.rest import (
     AgentCreateRequest,
+    AgentDeploymentListItem,
+    AgentDeploymentResponse,
     AgentUpdateRequest,
     CallDirection,
     CallStatus,
+    CreateAgentDeploymentRequest,
     CreateCallRequest,
     CreateWebhookSubscriptionRequest,
     ImportPhoneNumberRequest,
@@ -22,7 +25,10 @@ from assemblyai_agents.models.rest import (
     PurchasePhoneNumberRequest,
     SessionListItem,
     SessionResponse,
+    SetToolSecretRequest,
     TokenCreateRequest,
+    ToolSecretListResponse,
+    ToolSecretResponse,
     UpdateWebhookSubscriptionRequest,
     VoiceConfig,
     WebhookDeliveryListResponse,
@@ -449,6 +455,25 @@ def _create_webhook_body() -> CreateWebhookSubscriptionRequest:
     )
 
 
+def _deployment_dict(deployment_id: str) -> dict:
+    return {
+        "id": deployment_id,
+        "agent_id": "agt_1",
+        "deployment_type": "tools",
+        "status": "pending",
+        "created_at": _TS,
+        "updated_at": _TS,
+    }
+
+
+def _create_deployment_body() -> CreateAgentDeploymentRequest:
+    return CreateAgentDeploymentRequest(agent_id="agt_1", source="x = 1\n")
+
+
+def _tool_secret_dict(name: str) -> dict:
+    return {"name": name, "created_at": _TS, "updated_at": _TS}
+
+
 def _purchase_available_body() -> PurchaseAvailablePhoneNumberRequest:
     return PurchaseAvailablePhoneNumberRequest(country_code="US", number_type="local")
 
@@ -626,14 +651,69 @@ def _resources_b_specs():
             asy=lambda c: c.webhooks.list_latest_deliveries("sess_1"),
             ret=WebhookDeliveryListResponse,
         ),
+        "deployments.create": dict(
+            responses=[(201, _deployment_dict("agentdep_1"), None)],
+            sync=lambda c: c.deployments.create(_create_deployment_body()),
+            asy=lambda c: c.deployments.create(_create_deployment_body()),
+            ret=AgentDeploymentResponse,
+        ),
+        "deployments.list": dict(
+            responses=[
+                {
+                    "agent_deployments": [_deployment_dict("agentdep_1")],
+                    "has_more": False,
+                    "response_metadata": {"next_cursor": ""},
+                }
+            ],
+            sync=lambda c: list(c.deployments.list(agent_id="agt_1", limit=1)),
+            asy=lambda c: c.deployments.list(agent_id="agt_1", limit=1),
+            is_list=True,
+            ret=list,
+            item=AgentDeploymentListItem,
+        ),
+        "deployments.get": dict(
+            responses=[(200, _deployment_dict("agentdep_2"), None)],
+            sync=lambda c: c.deployments.get("agentdep_2"),
+            asy=lambda c: c.deployments.get("agentdep_2"),
+            ret=AgentDeploymentResponse,
+        ),
+        "deployments.delete": dict(
+            responses=[(204, None, None)],
+            sync=lambda c: c.deployments.delete("agentdep_1"),
+            asy=lambda c: c.deployments.delete("agentdep_1"),
+            ret=type(None),
+        ),
+        "tool_secrets.set": dict(
+            responses=[(200, _tool_secret_dict("orders_key"), None)],
+            sync=lambda c: c.tool_secrets.set(
+                "orders_key", SetToolSecretRequest(value="v")
+            ),
+            asy=lambda c: c.tool_secrets.set(
+                "orders_key", SetToolSecretRequest(value="v")
+            ),
+            ret=ToolSecretResponse,
+        ),
+        "tool_secrets.list": dict(
+            responses=[(200, {"secrets": [_tool_secret_dict("a")]}, None)],
+            sync=lambda c: c.tool_secrets.list(),
+            asy=lambda c: c.tool_secrets.list(),
+            ret=ToolSecretListResponse,
+        ),
+        "tool_secrets.delete": dict(
+            responses=[(204, None, None)],
+            sync=lambda c: c.tool_secrets.delete("orders_key"),
+            asy=lambda c: c.tool_secrets.delete("orders_key"),
+            ret=type(None),
+        ),
     }
 
 
-# The three methods the router idempotency-guards (and ONLY these).
+# The methods the router idempotency-guards (and ONLY these).
 _IDEMPOTENT_NAMES = {
     "phone_numbers.purchase_available",
     "phone_numbers.purchase",
     "phone_numbers.import_",
+    "deployments.create",
 }
 
 
@@ -664,6 +744,8 @@ def test_async_parity_all_methods(make_async_client):
             "list_deliveries",
             "list_latest_deliveries",
         ],
+        "deployments": ["create", "list", "get", "delete"],
+        "tool_secrets": ["set", "list", "delete"],
     }
     for namespace, methods in expected.items():
         resource = getattr(asy, namespace)
@@ -674,10 +756,9 @@ def test_async_parity_all_methods(make_async_client):
 
 @pytest.mark.asyncio
 async def test_async_roundtrips_match_sync(make_client, make_async_client):
-    # Drive each of the 18 new methods sync and async against identical responses
+    # Drive each method in the matrix sync and async against identical responses
     # and assert the observable wire signature is identical and the return types
-    # match, with idempotency-key presence parity on exactly the three guarded
-    # phone POSTs.
+    # match, with idempotency-key presence parity on exactly the guarded POSTs.
     specs = _resources_b_specs()
 
     for name, spec in specs.items():
@@ -700,7 +781,7 @@ async def test_async_roundtrips_match_sync(make_client, make_async_client):
         async_sigs = [_request_signature(r) for r in async_rec.requests]
         assert sync_sigs == async_sigs, name
 
-        # idempotency-key presence parity: exactly the three guarded phone POSTs
+        # idempotency-key presence parity: exactly the guarded POSTs
         sync_has_key = any(r.headers.get(HEADER) for r in sync_rec.requests)
         async_has_key = any(r.headers.get(HEADER) for r in async_rec.requests)
         assert sync_has_key == async_has_key == (name in _IDEMPOTENT_NAMES), name

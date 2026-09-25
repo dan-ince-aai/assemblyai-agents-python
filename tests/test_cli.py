@@ -370,6 +370,22 @@ def test_a_ready_service_with_no_address_says_so_rather_than_printing_a_blank(
     assert code == 0
     assert "reported no " in errs
     assert "https://" not in out
+    # The pointer names the real deployment, so it can be pasted as it is.
+    assert f"deployments status {DEPLOYMENT_ID}" in errs
+
+
+def test_a_status_newer_than_this_package_stops_waiting_without_a_traceback(
+    make_client, recorder
+):
+    code, _, errs, _ = _run_deploy(
+        make_client, recorder, [_created(), _polled("provisioning")]
+    )
+
+    assert code == 1
+    assert "provisioning" in errs
+    assert "Upgrade" in errs
+    assert "was not cancelled" in errs
+    assert f"deployments status {DEPLOYMENT_ID}" in errs
 
 
 def test_a_container_that_refused_to_serve_is_explained(make_client, recorder):
@@ -738,12 +754,14 @@ def test_a_running_deployment_exits_three(make_client, recorder, status):
     assert code == _cli.PENDING_EXIT_CODE
 
 
-def test_a_status_this_version_never_heard_of_is_not_called_a_failure(
-    make_client, recorder
-):
-    code, _, _ = _run_status(make_client, recorder, [_polled("provisioning")])
+def test_a_status_newer_than_this_package_asks_for_an_upgrade(make_client, recorder):
+    code, out, errs = _run_status(make_client, recorder, [_polled("provisioning")])
 
-    assert code == _cli.PENDING_EXIT_CODE
+    # Neither "still running" nor "failed" can be claimed for a status this
+    # version cannot interpret, so it exits 1 and says why.
+    assert code == 1
+    assert "Upgrade" in errs
+    assert "provisioning" in out
 
 
 def test_status_prints_the_detail_in_full(make_client, recorder):
