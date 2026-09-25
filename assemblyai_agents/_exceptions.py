@@ -38,6 +38,7 @@ class ErrorCode:
     IDEMPOTENCY_KEY_INVALID = "idempotency_key_invalid"
     IDEMPOTENCY_KEY_REUSE = "idempotency_key_reuse"
     IDEMPOTENCY_IN_PROGRESS = "idempotency_in_progress"
+    DEPLOYMENT_CAPACITY_EXCEEDED = "deployment_capacity_exceeded"
     NOT_FOUND = "not_found"
     METHOD_NOT_ALLOWED = "method_not_allowed"
     INTERNAL_ERROR = "internal_error"

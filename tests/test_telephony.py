@@ -148,7 +148,7 @@ def test_a_pre_connect_request_becomes_the_wire_model():
         headers=[Header(name="Authorization", value="Bearer x")],
         returns=[Captured(name="customer_tier", path="customer.tier", default="std")],
         timeout_ms=250,
-        allow_overrides=True,
+        allow_overrides=["greeting"],
     )
 
     assert entry.to_request() == PlaintextPreConnectRequest(
@@ -201,11 +201,64 @@ def test_a_pre_connect_timeout_outside_the_range_is_refused(timeout):
     assert "1-800" in str(exc_info.value)
 
 
-def test_allow_overrides_is_a_flag_not_a_list():
+def test_allow_overrides_is_a_list_from_a_closed_vocabulary():
     with pytest.raises(ConfigurationError) as exc_info:
-        whois(allow_overrides=["greeting"])
+        whois(allow_overrides=["system_prompt"])
 
-    assert "allow_overrides" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "allow_overrides" in message
+    assert "greeting, session" in message
+
+
+def test_a_session_override_reaches_the_wire():
+    entry = whois(allow_overrides=["greeting", "session"])
+
+    assert entry.to_request().allow_overrides == ["greeting", "session"]
+
+
+def test_the_old_flag_spelling_still_means_the_greeting():
+    # `allow_overrides` used to be a greeting-only bool. Declarations written
+    # against that keep working.
+    assert whois(allow_overrides=True).to_request().allow_overrides == ["greeting"]
+    assert whois(allow_overrides=True).allow_overrides == ["greeting"]
+
+
+def test_a_false_flag_allows_no_override():
+    assert whois(allow_overrides=False).to_request().allow_overrides is None
+
+
+def test_no_overrides_by_default():
+    assert whois().to_request().allow_overrides is None
+
+
+def test_on_failure_defaults_to_continue():
+    assert whois().on_failure == "continue"
+    assert whois().to_request().on_failure == "continue"
+
+
+def test_reject_on_failure_reaches_the_wire():
+    assert whois(on_failure="reject").to_request().on_failure == "reject"
+
+
+def test_on_failure_is_set_per_entry():
+    built = agent(
+        pre_connect=[whois(), whois(on_failure="reject")]
+    ).to_request()
+
+    assert [entry.on_failure for entry in built.pre_connect_requests] == [
+        "continue",
+        "reject",
+    ]
+
+
+def test_an_unknown_on_failure_is_refused():
+    with pytest.raises(ConfigurationError) as exc_info:
+        whois(on_failure="abort")
+
+    message = str(exc_info.value)
+    assert "on_failure" in message
+    assert "continue, reject" in message
+    assert "refuses the caller's call" in message
 
 
 def test_a_sends_name_no_entry_produces_is_refused():

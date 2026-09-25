@@ -10,6 +10,7 @@ from assemblyai_agents.models.rest import (
     HttpToolHeaderInput,
     PlaintextHttpToolConfig,
     ResponseInstructions,
+    ToolSessionUpdate,
 )
 
 pytestmark = [pytest.mark.asyncio]
@@ -407,6 +408,46 @@ def test_hosted_at_keeps_everything_the_model_reads():
     assert bound.spec.parameters == declared.spec.parameters
     assert bound.spec.timeout_seconds == 9
     assert bound.spec.target is declared.spec.target
+
+
+def test_hosted_at_keeps_the_session_update():
+    @tool(session_update=ToolSessionUpdate(enabled=True))
+    def switch_language(language: str) -> str:
+        """Switch the language the caller is heard in."""
+        return language
+
+    bound = switch_language.hosted_at("https://demo.ngrok-free.app/tools/lang")
+
+    assert bound.definition().session_update == ToolSessionUpdate(enabled=True)
+
+
+def test_a_session_update_reaches_the_definition():
+    @tool(
+        http=PlaintextHttpToolConfig(
+            url="https://api.example.com/language", http_method=HttpMethod.POST
+        ),
+        session_update=ToolSessionUpdate(enabled=True),
+    )
+    def switch_language(language: str) -> str:
+        """Switch the language the caller is heard in."""
+        return language
+
+    assert switch_language.spec.session_update == ToolSessionUpdate(enabled=True)
+    assert switch_language.definition().session_update == ToolSessionUpdate(
+        enabled=True
+    )
+
+
+def test_a_tool_declares_no_session_update_by_default():
+    @tool
+    def lookup_order(order_id: str) -> dict:
+        """Look up one of the caller's orders by its ID."""
+        return {}
+
+    assert lookup_order.definition().session_update is None
+    assert "session_update" not in lookup_order.definition().model_dump(
+        exclude_none=True
+    )
 
 
 def test_hosted_at_carries_headers_and_method():

@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from ._exceptions import ConfigurationError
 from .models.rest import (
@@ -29,9 +29,15 @@ CALL_FACTS = frozenset(
     {"caller_number", "dialed_number", "direction", "agent_id", "session_id"}
 )
 
-# The only member of `allow_overrides`'s closed vocabulary, which is why the
-# field is a flag here rather than a list.
+# `allow_overrides` and `on_failure` are closed vocabularies on the API; these
+# mirror them so a typo is refused here rather than after a round trip.
 GREETING_OVERRIDE = "greeting"
+SESSION_OVERRIDE = "session"
+ALLOWED_OVERRIDES = (GREETING_OVERRIDE, SESSION_OVERRIDE)
+
+CONTINUE_ON_FAILURE = "continue"
+REJECT_ON_FAILURE = "reject"
+ON_FAILURE_VALUES = (CONTINUE_ON_FAILURE, REJECT_ON_FAILURE)
 
 _E164 = re.compile(r"^\+[1-9]\d{1,14}$")
 
@@ -145,17 +151,19 @@ class PreConnectRequest:
     Four behaviours are not in the wire model and will surprise anyone who
     assumes otherwise.
 
-    **Pre-connect fails open on every error.**
-    A timeout, a 500, an unparseable body: the call proceeds without the values.
-    It is not a gate.
+    **Whether a failure lets the call through is each entry's own choice**, and
+    by default it does. With ``on_failure="continue"`` a timeout, a 500 or an
+    unparseable body costs this entry's values and the call proceeds without
+    them. With ``on_failure="reject"`` any of those refuses the caller's call
+    instead: the caller is not connected. The setting is per entry, so one
+    lookup can be advisory while the next one gates the call.
 
     **A greeting override is read from a top-level ``greeting`` key in the
     response**, not from a value named in ``returns``.
-    Setting ``allow_overrides=True`` permits it; naming a capture ``greeting``
-    does not deliver it.
+    Listing ``"greeting"`` in ``allow_overrides`` permits it; naming a capture
+    ``greeting`` does not deliver it.
 
-    **A top-level ``reject: true`` in the response aborts the call.** That is
-    the one thing a pre-connect endpoint can do to stop a conversation.
+    **A top-level ``reject: true`` in a successful response aborts the call.**
 
     **The platform's own call facts are sent only when named.**
     ``caller_number``, ``dialed_number``, ``direction`` (``"inbound"`` or
@@ -168,8 +176,14 @@ class PreConnectRequest:
     ``Captured`` carrying a ``default`` is how to guarantee the key is always
     present.
 
-    ``allow_overrides`` is a flag rather than a list because the wire field's
-    vocabulary is closed and holds one value, ``greeting``.
+    ``allow_overrides`` is a list drawn from a closed vocabulary.
+    ``"greeting"`` lets the response replace the spoken greeting. ``"session"``
+    lets it return a top-level ``session`` object carrying connect-time
+    settings, such as transcription settings and the voice, applied before the
+    call's first word. Which fields that object may carry is the platform's
+    decision: an unpermitted field is refused, never quietly dropped. The older
+    flag spelling is still accepted: ``True`` means ``["greeting"]`` and
+    ``False`` means none.
     """
 
     url: str
@@ -178,7 +192,8 @@ class PreConnectRequest:
     sends: Optional[list[str]] = None
     returns: Optional[list[Captured]] = None
     timeout_ms: Optional[int] = None
-    allow_overrides: bool = False
+    allow_overrides: Union[list[str], bool, None] = None
+    on_failure: str = CONTINUE_ON_FAILURE
 
     def __post_init__(self) -> None:
         if not self.url.startswith("https://"):
@@ -197,11 +212,26 @@ class PreConnectRequest:
             MIN_PRE_CONNECT_TIMEOUT_MS,
             MAX_PRE_CONNECT_TIMEOUT_MS,
         )
-        if not isinstance(self.allow_overrides, bool):
+        if isinstance(self.allow_overrides, bool):
+            # The field used to be a greeting-only flag; keep that spelling
+            # working rather than breaking every declaration written against it.
+            object.__setattr__(
+                self,
+                "allow_overrides",
+                [GREETING_OVERRIDE] if self.allow_overrides else None,
+            )
+        for override in self.allow_overrides or ():
+            if override not in ALLOWED_OVERRIDES:
+                raise ConfigurationError(
+                    f"pre-connect url={self.url!r}: allow_overrides={override!r} is "
+                    f"not one of {', '.join(ALLOWED_OVERRIDES)}."
+                )
+        if self.on_failure not in ON_FAILURE_VALUES:
             raise ConfigurationError(
-                f"pre-connect url={self.url!r}: allow_overrides is a flag, not a "
-                f"list. The wire field's vocabulary holds one value, `greeting`, so "
-                f"`True` is the whole of it."
+                f"pre-connect url={self.url!r}: on_failure={self.on_failure!r} is "
+                f"not one of {', '.join(ON_FAILURE_VALUES)}. "
+                f"{REJECT_ON_FAILURE!r} refuses the caller's call when this "
+                f"request fails."
             )
         _require_unique_capture_names(self.captured_names())
 
@@ -232,7 +262,10 @@ class PreConnectRequest:
                 for captured in self.returns
             ],
             timeout_ms=self.timeout_ms,
-            allow_overrides=[GREETING_OVERRIDE] if self.allow_overrides else None,
+            allow_overrides=list(self.allow_overrides)
+            if self.allow_overrides
+            else None,
+            on_failure=self.on_failure,
         )
 
 

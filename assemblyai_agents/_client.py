@@ -14,9 +14,11 @@ from ._transport import AsyncTransportCore, SyncTransportCore
 from .resources.agents import AgentsResource, AsyncAgentsResource
 from .resources.builtin_tools import AsyncBuiltinToolsResource, BuiltinToolsResource
 from .resources.calls import AsyncCallsResource, CallsResource
+from .resources.deployments import AsyncDeploymentsResource, DeploymentsResource
 from .resources.phone_numbers import AsyncPhoneNumbersResource, PhoneNumbersResource
 from .resources.sessions import AsyncSessionsResource, SessionsResource
 from .resources.tokens import AsyncTokensResource, TokensResource
+from .resources.tool_secrets import AsyncToolSecretsResource, ToolSecretsResource
 from .resources.webhooks import AsyncWebhooksResource, WebhooksResource
 
 
@@ -44,6 +46,8 @@ class Client:
         self.phone_numbers = PhoneNumbersResource(self)
         self.sessions = SessionsResource(self)
         self.webhooks = WebhooksResource(self)
+        self.deployments = DeploymentsResource(self)
+        self.tool_secrets = ToolSecretsResource(self)
 
     def request(
         self,
@@ -130,6 +134,8 @@ class AsyncClient:
         self.phone_numbers = AsyncPhoneNumbersResource(self)
         self.sessions = AsyncSessionsResource(self)
         self.webhooks = AsyncWebhooksResource(self)
+        self.deployments = AsyncDeploymentsResource(self)
+        self.tool_secrets = AsyncToolSecretsResource(self)
 
     async def request(
         self,

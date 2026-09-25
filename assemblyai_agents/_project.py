@@ -21,9 +21,10 @@ MAX_PATH_CHARACTERS = 200
 
 IGNORE_FILE = ".assemblyaiignore"
 
-# Dropped wherever they appear. The first four are what the API drops too, so
-# what is counted against the size limits here is what it stores; the rest are
-# tooling output that is never a module the customer wrote.
+# Dropped wherever they appear. The API itself drops only `__pycache__` and
+# `.git`; dropping those here too keeps what is counted against the size limits
+# equal to what it stores. The rest are tooling output that is never a module
+# the customer wrote, and only this side drops them.
 SKIPPED_DIRECTORIES = frozenset(
     {
         "__pycache__",
@@ -153,14 +154,13 @@ def read_project(root: Path) -> Project:
 
 
 def build_archive(files: Dict[str, bytes]) -> bytes:
-    """One uncompressed tar, byte-for-byte reproducible from the same tree.
+    """One uncompressed tar, byte-for-byte what the API re-emits on receipt.
 
-    Uncompressed, and with every field that records a time or an owner fixed,
-    because AssemblyAI names the stored project and its image after a hash of
-    exactly these bytes. Anything left to vary — the order a directory happens
-    to be walked in, the mtime of a file that was only touched, the compression
-    library on the machine doing the deploying — would rebuild an image that is
-    already built and hand back a new name for an unchanged project.
+    AssemblyAI does not hash the bytes uploaded. It unpacks them, re-packs the
+    tree into its own canonical tar and names the stored project and its image
+    after the sha256 of that. Building the same tar here, with every field that
+    records a time or an owner fixed and the entries in a fixed order, is what
+    makes the digest this side computes the one the stored project is named by.
     """
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as tar:
