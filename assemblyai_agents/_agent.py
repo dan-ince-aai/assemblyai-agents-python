@@ -39,6 +39,14 @@ class VoiceAgent:
     a shortcut that relocates a field is the second vocabulary this builder
     exists to remove — write ``input=AudioInput(keyterms=[...])``.
 
+    ``platform_tools_enabled`` is ``True`` by default, which is AssemblyAI's own
+    default too. Set it ``False`` when your model endpoint cannot return tool
+    calls: nothing of ours is then added to the tool list the model sees. Only
+    one tool is ever added at you — ``transfer_call``, and only when
+    ``transfer_targets`` is configured — so turning this off costs you human
+    transfer and nothing else. The server refuses a declaration that turns it
+    off and still names a platform tool in ``tools``.
+
     ``transfer_targets``, ``pre_connect``, ``outbound_trunk_id`` and
     ``caller_id`` are telephony fields and inert on a WebSocket session. Every
     rule about them that is decidable without the network is checked here rather
@@ -60,6 +68,7 @@ class VoiceAgent:
     pre_connect: Optional[list[PreConnectRequest]] = None
     outbound_trunk_id: Optional[str] = None
     caller_id: Optional[str] = None
+    platform_tools_enabled: bool = True
 
     def __init_subclass__(cls, **kwargs) -> None:
         raise ConfigurationError(
@@ -95,6 +104,7 @@ class VoiceAgent:
             outbound_trunk_id=self.outbound_trunk_id,
             caller_id=self.caller_id,
             llm=None if self.llm is None else [self.llm],
+            platform_tools_enabled=self.platform_tools_enabled,
         )
 
     def to_update_request(self) -> AgentUpdateRequest:

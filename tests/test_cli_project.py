@@ -442,7 +442,7 @@ def test_deploying_a_directory_puts_the_tar_in_the_archive_field(
 
     body = json.loads(recorder.requests[0].content)
     assert code == 0
-    assert set(body) == {"agent_id", "archive"}
+    assert set(body) == {"agent_id", "deployment_type", "archive"}
     assert names(base64.b64decode(body["archive"])) == [
         "main.py",
         "pkg/__init__.py",
@@ -461,7 +461,11 @@ def test_deploying_one_file_still_sends_source(tmp_path, make_client, recorder):
 
     body = json.loads(recorder.requests[0].content)
     assert code == 0
-    assert body == {"agent_id": AGENT_ID, "source": ENTRY}
+    assert body == {
+        "agent_id": AGENT_ID,
+        "deployment_type": "tools",
+        "source": ENTRY,
+    }
 
 
 def test_a_project_that_cannot_be_packed_never_reaches_the_api(

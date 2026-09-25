@@ -76,6 +76,23 @@ class DeliveryStatus(Enum):
     failed = 'failed'
 
 
+class DeploymentStatus(Enum):
+    pending = 'pending'
+    building = 'building'
+    ready = 'ready'
+    import_failed = 'import_failed'
+    no_tools_found = 'no_tools_found'
+    timed_out = 'timed_out'
+    service_unhealthy = 'service_unhealthy'
+    dependencies_failed = 'dependencies_failed'
+    internal_error = 'internal_error'
+
+
+class DeploymentType(Enum):
+    tools = 'tools'
+    service = 'service'
+
+
 class DtmfCollectionProfile(BaseModel):
     parameter_name: str = Field(
         ...,
@@ -524,6 +541,15 @@ class SessionResponse(BaseModel):
     )
 
 
+class SetToolSecretRequest(BaseModel):
+    value: SecretStr = Field(
+        ...,
+        description='The secret value, 1 to 8192 characters. Accepted in the request body only, stored encrypted, and never returned by any endpoint. Setting a name that already exists replaces the stored value.',
+        examples=['EXAMPLE-VALUE-not-a-real-credential'],
+        title='Value',
+    )
+
+
 class TargetKind(Enum):
     human = 'human'
     agent = 'agent'
@@ -547,6 +573,29 @@ class TokenResponse(BaseModel):
         ...,
         description='When the token stops being accepted on connect (UTC). This is the connect window, not the session length: once a session is established it runs to completion regardless of this time.',
         title='Expires At',
+    )
+
+
+class ToolSecretResponse(BaseModel):
+    name: str = Field(
+        ...,
+        description='Name your tool code passes to `ctx.secret()`.',
+        examples=['orders_api_key'],
+        title='Name',
+    )
+    created_at: datetime = Field(
+        ..., description='When the secret was first set.', title='Created At'
+    )
+    updated_at: datetime = Field(
+        ..., description='When the value was last replaced.', title='Updated At'
+    )
+
+
+class ToolSessionUpdate(BaseModel):
+    enabled: bool | None = Field(
+        False,
+        description='Whether this tool\'s HTTP response may carry a `session` block that reconfigures speech recognition for the rest of the call. Off by default: a tool that has never asked for it cannot reconfigure anything. When on, the tool must answer with `{"result": ..., "session": {...}}` — `result` is what the agent reads, `session` is stripped before the agent ever sees it. Only `input.keyterms`, `input.transcription_mode`, `input.continuous_partials`, `input.transcription_prompt` and `input.turn_detection.interruption_delay` may be set; anything else is refused and the whole block is dropped. The change takes effect from the caller\'s next utterance, and is applied best-effort — a refused block is reported in logs and metrics, not back to the tool.',
+        title='Enabled',
     )
 
 
@@ -702,6 +751,86 @@ class WebhookSubscriptionResponse(BaseModel):
     )
 
 
+class AgentDeploymentListItem(BaseModel):
+    id: str = Field(..., description='Unique ID of the deployment.', title='Id')
+    agent_id: str = Field(
+        ..., description='Agent this code was deployed for.', title='Agent Id'
+    )
+    deployment_type: DeploymentType = Field(
+        ..., description="What this deployment's code is run as."
+    )
+    status: DeploymentStatus = Field(
+        ...,
+        description="`pending`, then `building` once the image is being made, then `ready`, or one of `import_failed`, `no_tools_found`, `dependencies_failed`, `timed_out`. A `service` deployment can also end at `service_unhealthy`, which means the container started and then refused to serve, and never ends at `no_tools_found`. `internal_error` means the deployment failed on AssemblyAI's side rather than in the uploaded code.",
+    )
+    service_url: str | None = Field(
+        None,
+        description="Where a `service` deployment answers. Set this as the agent's model endpoint to route the agent through it. Null for a `tools` deployment, and null for a `service` that has not reached `ready`.",
+        title='Service Url',
+    )
+    detail: str | None = Field(
+        None,
+        description='Why the deployment failed. Null while pending and on success.',
+        title='Detail',
+    )
+    created_at: datetime = Field(
+        ..., description='When the deployment was created.', title='Created At'
+    )
+    updated_at: datetime = Field(
+        ..., description='When the deployment last changed.', title='Updated At'
+    )
+
+
+class AgentDeploymentListResponse(BaseModel):
+    agent_deployments: list[AgentDeploymentListItem] = Field(
+        ..., description='Page of deployments, newest first.', title='Agent Deployments'
+    )
+    has_more: bool | None = Field(
+        False,
+        description='True when more results may be available; fetch the next page with `response_metadata.next_cursor`.',
+        title='Has More',
+    )
+    response_metadata: ResponseMetadata | None = Field(
+        {'next_cursor': ''},
+        description='Pagination details for fetching the next page.',
+        validate_default=True,
+    )
+
+
+class AgentDeploymentResponse(BaseModel):
+    id: str = Field(
+        ...,
+        description="Unique ID of the deployment, for `GET /v1/agent-deployments/{deployment_id}`. The deploy attaches the hosted tools to the agent itself and reports this ID on each one, so connecting with that agent's ID is all that is needed to call them.",
+        title='Id',
+    )
+    agent_id: str = Field(
+        ..., description='Agent this code was deployed for.', title='Agent Id'
+    )
+    deployment_type: DeploymentType = Field(
+        ..., description="What this deployment's code is run as."
+    )
+    status: DeploymentStatus = Field(
+        ...,
+        description="`pending`, then `building` once the image is being made, then `ready`, or one of `import_failed`, `no_tools_found`, `dependencies_failed`, `timed_out`. A `service` deployment can also end at `service_unhealthy`, which means the container started and then refused to serve, and never ends at `no_tools_found`. `internal_error` means the deployment failed on AssemblyAI's side rather than in the uploaded code.",
+    )
+    service_url: str | None = Field(
+        None,
+        description="Where a `service` deployment answers. Set this as the agent's model endpoint to route the agent through it. Null for a `tools` deployment, and null for a `service` that has not reached `ready`.",
+        title='Service Url',
+    )
+    detail: str | None = Field(
+        None,
+        description='Why the deployment failed. Null while pending and on success.',
+        title='Detail',
+    )
+    created_at: datetime = Field(
+        ..., description='When the deployment was created.', title='Created At'
+    )
+    updated_at: datetime = Field(
+        ..., description='When the deployment last changed.', title='Updated At'
+    )
+
+
 class AgentListResponse(BaseModel):
     agents: list[AgentListItem] = Field(
         ..., description='Page of agents, newest first.', title='Agents'
@@ -821,6 +950,30 @@ class CallResponse(BaseModel):
     status: CallStatus = Field(..., description='Current lifecycle state of the call.')
 
 
+class CreateAgentDeploymentRequest(BaseModel):
+    agent_id: constr(min_length=1) = Field(
+        ...,
+        description='Agent this code is deployed for.',
+        examples=['agent_b4c9e0d27a314c6e9f5a8d2e6c1b0a47'],
+        title='Agent Id',
+    )
+    deployment_type: DeploymentType | None = Field(
+        'tools',
+        description="What your code is run as. `tools` reads the tools out of your project and attaches them to the agent. `service` runs your project as a long-running HTTP service and reports the address it answers on, which you can then set as the agent's model endpoint. Not guessed from the code: a project can hold both.",
+    )
+    source: constr(min_length=1, max_length=262144) | None = Field(
+        None,
+        description='Python source for a single module defining your tools, as a shorthand for an `archive` holding one `main.py`. Each tool is a decorated function; its schema is read from the module itself, so the module must import cleanly.',
+        examples=['from assemblyai_agents import tool\n\n\n@tool()\ndef lookup_order(order_id: str) -> dict:\n    """Look up an order by its id."""\n    return {\'order_id\': order_id, \'status\': \'shipped\'}\n'],
+        title='Source',
+    )
+    archive: constr(min_length=1, max_length=5592408) | None = Field(
+        None,
+        description='Your project directory as a base64-encoded tar, optionally gzipped. It must contain `main.py` at its root, which is where your tools are read from; every other file is importable beside it by its own name. Every file must be UTF-8 text, because the runtime that loads them reads them as text. `__pycache__`, `.pyc` and `.git` are dropped.',
+        title='Archive',
+    )
+
+
 class CreateWebhookSubscriptionRequest(BaseModel):
     url: constr(max_length=2048) = Field(
         ...,
@@ -900,15 +1053,21 @@ class PlaintextPreConnectRequest(BaseModel):
     )
     timeout_ms: int | None = Field(
         None,
-        description="Lowers this request's timeout. Each request has its own 800 ms ceiling; this can only shorten the wait, never extend it.",
+        description="Lowers this request's timeout; it can only shorten the wait, never extend it. The ceiling is 10000 ms, which is also the whole pre-connect budget for the call: the requests run in order and each one gets what those before it did not spend.",
         examples=[250],
         title='Timeout Ms',
     )
     allow_overrides: list[str] | None = Field(
         None,
-        description="Agent fields this request's captured values may replace. Closed vocabulary; today only `greeting`.",
-        examples=[['greeting']],
+        description="What this request's response is permitted to override. Closed vocabulary. `greeting` lets a top-level `greeting` key replace the spoken greeting. `session` lets a top-level `session` object carry connect-time settings, applied before the first word; which fields that object may carry is the platform's decision, and an unpermitted field is refused rather than quietly dropped.",
+        examples=[['greeting', 'session']],
         title='Allow Overrides',
+    )
+    on_failure: str | None = Field(
+        'continue',
+        description="What happens when this request fails — a timeout, a non-2xx response, an unreachable host, any error at all. Closed vocabulary. `continue` (the default) starts the conversation anyway, without the values this request would have captured. `reject` refuses the caller's call: the caller is not connected and hears nothing from the agent. `reject` exists because a request that may override the voice and the greeting cannot fail quietly — answering with the stored defaults would greet the caller as the wrong persona.",
+        examples=['reject'],
+        title='On Failure',
     )
 
 
@@ -961,6 +1120,10 @@ class PlaintextToolDefinition(BaseModel):
         description='Parameters the caller enters on the telephone keypad rather than speaking, each naming one property of `parameters`. Telephone calls only: a WebSocket session receives no keypad input.',
         title='Dtmf Collected Arguments',
     )
+    session_update: ToolSessionUpdate | None = Field(
+        None,
+        description="Lets this tool's response reconfigure speech recognition for the rest of the call. Requires `http`.",
+    )
 
 
 class PreConnectRequestResponse(BaseModel):
@@ -969,7 +1132,7 @@ class PreConnectRequestResponse(BaseModel):
     )
     sends: list[str] | None = Field(
         None,
-        description='Names captured by an earlier request and sent to this one.',
+        description="Names sent to this endpoint: the platform's call facts, and names an earlier entry captured. Opt-in per entry; a call fact the platform does not have is omitted, so its `default` applies.",
         title='Sends',
     )
     returns: list[PreConnectReturnResponse] | None = Field(
@@ -979,13 +1142,18 @@ class PreConnectRequestResponse(BaseModel):
     )
     timeout_ms: int | None = Field(
         None,
-        description='Lowered timeout for this request. Null means the full 800 ms ceiling applies.',
+        description='Lowered timeout for this request. Null means the 10000 ms ceiling applies, which is also the whole pre-connect budget for the call: the requests run in order and each one gets what those before it did not spend.',
         title='Timeout Ms',
     )
     allow_overrides: list[str] | None = Field(
         None,
         description="Agent fields this request's captured values may replace.",
         title='Allow Overrides',
+    )
+    on_failure: str | None = Field(
+        'continue',
+        description="What happens when this request fails, for any reason. `continue` starts the conversation without this request's values; `reject` refuses the caller's call.",
+        title='On Failure',
     )
 
 
@@ -1026,6 +1194,23 @@ class ToolResponse(BaseModel):
         None,
         description='Tool arguments the caller enters on the phone keypad instead of speaking them. Telephony calls only. Send the list back unchanged on update to keep the stored configuration.',
         title='Dtmf Collected Arguments',
+    )
+    deployment_id: str | None = Field(
+        None,
+        description="Agent deployment hosting this tool's code. Read-only: it is set by `POST /v1/agent-deployments` and cannot be written on an agent. Null for a tool called over HTTP.",
+        title='Deployment Id',
+    )
+    session_update: ToolSessionUpdate | None = Field(
+        None,
+        description="Whether this tool's response may carry a `session` block that reconfigures speech recognition for the rest of the call.",
+    )
+
+
+class ToolSecretListResponse(BaseModel):
+    secrets: list[ToolSecretResponse] | None = Field(
+        None,
+        description='Every secret on the account, by name, ordered by name.',
+        title='Secrets',
     )
 
 
@@ -1146,6 +1331,11 @@ class AgentCreateRequest(BaseModel):
         description='Conversational LLM for the agent. A single entry overrides the default model; the list is capped at one in v1.',
         title='Llm',
     )
+    platform_tools_enabled: bool | None = Field(
+        True,
+        description='Whether AssemblyAI may add its own tools to the tool list sent to the model. Set `false` when the model endpoint cannot return tool calls, so only the tools you defined are sent.',
+        title='Platform Tools Enabled',
+    )
 
 
 class AgentResponse(BaseModel):
@@ -1201,6 +1391,11 @@ class AgentResponse(BaseModel):
         None,
         description='Conversational LLM configured for the agent. The api_key is write-only and never returned.',
         title='Llm',
+    )
+    platform_tools_enabled: bool | None = Field(
+        True,
+        description='Whether AssemblyAI may add its own tools to the tool list sent to the model.',
+        title='Platform Tools Enabled',
     )
     created_at: datetime = Field(
         ..., description='When the agent was created.', title='Created At'
@@ -1269,4 +1464,9 @@ class AgentUpdateRequest(BaseModel):
         None,
         description='Replaces the stored LLM config; omit to keep the existing config.',
         title='Llm',
+    )
+    platform_tools_enabled: bool | None = Field(
+        None,
+        description='Whether AssemblyAI may add its own tools to the tool list sent to the model; omit to keep the stored setting.',
+        title='Platform Tools Enabled',
     )

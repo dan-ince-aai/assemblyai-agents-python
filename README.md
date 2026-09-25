@@ -326,9 +326,9 @@ Deployed in 28s.
 AssemblyAI is now running the tools in tools.py for agent agent_b4c9e0d2...
 ```
 
-`deploy` exits 0 only once the agent is serving the new tools, so a build job can
-depend on its exit status. If your module fails to import, the error from your
-own code is printed.
+`deploy` exits 0 only once the deployment is live, so a build job can depend on
+its exit status. If your module fails to import, the error from your own code is
+printed.
 
 Tools that outgrow one file go in a directory instead. Point `deploy` at the
 directory and the whole project is uploaded; your tools are read from `main.py`
@@ -385,6 +385,42 @@ read is what settles a deployment whose build died.
 
 Every command takes `--base-url` after the subcommand, defaulting to
 `ASSEMBLYAI_BASE_URL` and then to the production host.
+
+### Deploying an application instead of tools
+
+The same upload can be run a second way. `--type service` runs your project as a
+long-lived web application and prints the address it answers on, instead of
+reading tools out of it. That is how you host the endpoint from *Bring your own
+LLM* without operating a server. Which one you get is never guessed from the
+code, because one project can hold both.
+
+```console
+$ assemblyai-agents deploy ./collections --agent agent_b4c9e0d2... --type service
+Packed 42 files from ./collections, 688,128 bytes (sha256 8c41d0b6f2a7).
+Deploying ./collections to agent agent_b4c9e0d2... as a service.
+Created deployment agentdep_cc3b6476...
+  pending (0s)
+  building (4s)
+  ready (96s)
+Deployed in 96s.
+AssemblyAI is now running ./collections for agent agent_b4c9e0d2...
+
+  https://acme-prod--svc-6f1a2c9d4e8b70315a2d6c8f4b9e10a3.modal.run
+
+That address is stable across redeploys. Point the agent's model at it to route
+the conversation through your own code:
+  llm=LlmConfigRequest(base_url="https://acme-prod--svc-6f1a....modal.run/v1", model="...", api_key="...")
+```
+
+`main.py` still has to sit at the top of the project, but it is read for a
+module-level `app` (or `application`) rather than for `@tool()` functions — the
+same thing `uvicorn main:app` runs, and what a FastAPI or Starlette instance
+already is. If there is none, the deployment ends at `service_unhealthy` and the
+detail says so. A service is never marked `(serving)` in `deployments list`,
+because it attaches no tools; `deployments status ID` is where its address is.
+
+The address is stable for the life of the deployment, so you set it on the agent
+once. Deploy a new version of the code and the same address serves it.
 
 ### `ToolContext`
 
@@ -629,6 +665,18 @@ agent = VoiceAgent(
     ),
 )
 ```
+
+If your endpoint cannot answer with a tool call at all, add
+`platform_tools_enabled=False` to the declaration. AssemblyAI then sends the
+model only the tools you defined and none of its own. Exactly one tool of ours
+is ever added — `transfer_call`, and only when you configured
+`transfer_targets` — so turning it off costs you human transfer and nothing
+else. The default is on, and a declaration that turns it off while still naming
+a platform tool in `tools` is refused.
+
+You do not have to operate the server either. `assemblyai-agents deploy ./yourapp
+--agent AGENT_ID --type service` hosts it for you and prints the address to put
+in `base_url`; see *Deploying an application instead of tools* above.
 
 ### `assemblyai_agents.byo` reads the request and answers it
 
