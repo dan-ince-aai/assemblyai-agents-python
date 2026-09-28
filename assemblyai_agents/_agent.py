@@ -35,6 +35,14 @@ class VoiceAgent:
     expects (it is capped at one in v1); and ``input``/``output`` are typed
     helpers here and plain dicts on the wire.
 
+    ``llm`` left unset is itself a declaration: the agent runs on the model
+    endpoint AssemblyAI supplies, which for a project deployed with
+    ``--type service`` is that deployment's own. Nothing is sent — the key is
+    absent from the request rather than ``null`` or ``[]`` — so there is no
+    address to copy and no key to invent, and nothing to repoint when the
+    deployment moves. Set ``llm`` only to point the agent at an endpoint you
+    operate yourself; see :mod:`assemblyai_agents.byo`.
+
     ``keyterms`` is not a field here. It lives inside ``input`` on the wire, and
     a shortcut that relocates a field is the second vocabulary this builder
     exists to remove — write ``input=AudioInput(keyterms=[...])``.
@@ -85,6 +93,7 @@ class VoiceAgent:
             self, "system_prompt", textwrap.dedent(self.system_prompt).strip()
         )
         _require_unique_tool_names(self.tools)
+        _require_base_url_with_key(self.llm)
         validate_pre_connect(self.pre_connect)
         require_trunk_for_transfers(self.transfer_targets, self.outbound_trunk_id)
         if self.caller_id is not None:
@@ -147,6 +156,26 @@ class VoiceAgent:
         return tuple(
             declared.name for declared in self.tools or () if declared.spec.http is None
         )
+
+
+def _require_base_url_with_key(llm: Optional[LlmConfigRequest]) -> None:
+    """A key with no address is a key handed to nobody, and the server says so.
+
+    Saying nothing about the model is a declaration in its own right: the agent
+    runs on the endpoint AssemblyAI supplies from its own deployment. Naming
+    only a model is the same declaration with a model picked. Naming only a key
+    is neither — it is a half-deleted bring-your-own config, and the server
+    refuses it.
+    """
+    if llm is None or llm.base_url or not llm.api_key:
+        return
+    raise ConfigurationError(
+        "llm has an api_key but no base_url. A key with no address to send it "
+        "to cannot be used, and the server refuses the pair. Give the "
+        "endpoint's base_url, or leave `llm` unset, which is how an agent says "
+        "it runs on the model endpoint AssemblyAI supplies from its own "
+        "deployment."
+    )
 
 
 def _require_unique_tool_names(tools: Optional[list[Tool]]) -> None:

@@ -15,6 +15,7 @@ from assemblyai_agents.models.rest import (
     LlmConfigRequest,
     VoiceConfig,
 )
+from assemblyai_agents.resources.agents import _create_payload, _update_payload
 
 PROMPT = "You take pizza orders."
 
@@ -56,6 +57,46 @@ def test_a_single_llm_config_becomes_the_one_element_list_the_wire_takes():
     ).to_request()
 
     assert request.llm == [llm]
+
+
+def test_leaving_the_model_config_out_sends_no_llm_entry_at_all():
+    # How an agent says "run me on the service I deployed": say nothing about
+    # the model, and AssemblyAI supplies the endpoint from the agent's own
+    # deployment. The key has to be absent from the payload — not null, not an
+    # empty list — because absent is the shape the server reads as unset.
+    agent = VoiceAgent(name="Pizza Line", voice="ivy", system_prompt=PROMPT)
+
+    assert agent.to_request().llm is None
+    assert "llm" not in _create_payload(agent)
+    assert "llm" not in _update_payload(agent)
+
+
+def test_an_api_key_with_no_base_url_names_the_rule():
+    # The server refuses this pair, so it is refused here rather than on the
+    # round trip. Unset means "the endpoint AssemblyAI supplies"; a key on its
+    # own means nothing, and is usually a half-deleted bring-your-own config.
+    llm = LlmConfigRequest(base_url="", model="gpt-4o-mini", api_key="k")
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        VoiceAgent(name="Pizza Line", voice="ivy", system_prompt=PROMPT, llm=llm)
+
+    message = str(exc_info.value)
+    assert "api_key" in message
+    assert "base_url" in message
+    assert "leave `llm` unset" in message
+
+
+def test_naming_only_a_model_is_allowed_through():
+    # Picking a model on the endpoint AssemblyAI supplies, without naming an
+    # address. `models/rest.py` is generated and still requires all three
+    # fields, so this is written with them empty rather than omitted; once the
+    # spec that made them optional is regenerated in, omitting them reaches the
+    # same check.
+    llm = LlmConfigRequest(base_url="", model="gpt-4o-mini", api_key="")
+
+    agent = VoiceAgent(name="Pizza Line", voice="ivy", system_prompt=PROMPT, llm=llm)
+
+    assert agent.to_request().llm == [llm]
 
 
 def test_a_fully_populated_declaration_builds_the_wire_model_exactly():
