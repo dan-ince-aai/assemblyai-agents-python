@@ -442,13 +442,20 @@ def _print_service_address(
     print(f"  {service_url}", file=out)
     print("", file=out)
     print(
-        "That address is stable across redeploys. Point the agent's model at it "
+        "That address belongs to this deployment. Point the agent's model at it "
         "to route the conversation through your own code:",
         file=out,
     )
     print(
         f'  llm=LlmConfigRequest(base_url="{service_url}/v1", model="...", '
         f'api_key="...")',
+        file=out,
+    )
+    print("", file=out)
+    print(
+        "Deploying again makes a new deployment with a new address. Nothing "
+        "fails loudly when it moves: the agent keeps pointing at the old one. "
+        "Set the new address on the agent after every deploy.",
         file=out,
     )
 

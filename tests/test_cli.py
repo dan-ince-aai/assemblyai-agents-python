@@ -354,6 +354,27 @@ def test_a_service_deploy_prints_the_address_it_answers_on(make_client, recorder
     assert "AssemblyAI is now running the tools" not in out
 
 
+def test_a_service_deploy_says_the_address_is_this_deployments(make_client, recorder):
+    # Every deploy creates a new deployment and the address is derived from its
+    # ID, so a redeploy answers somewhere else and the old address stops
+    # serving. A customer who set it on the agent once is left pointing at a
+    # dead service, and nothing fails loudly.
+    _, out, _, _ = _run_deploy(
+        make_client,
+        recorder,
+        [
+            _created(deployment_type="service"),
+            _polled("ready", deployment_type="service", service_url=SERVICE_URL),
+        ],
+        deployment_type="service",
+    )
+
+    assert "stable" not in out
+    assert "belongs to this deployment" in out
+    assert "new address" in out
+    assert "after every deploy" in out
+
+
 def test_a_ready_service_with_no_address_says_so_rather_than_printing_a_blank(
     make_client, recorder
 ):
