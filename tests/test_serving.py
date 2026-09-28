@@ -9,17 +9,25 @@ import hmac
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from types import SimpleNamespace
 
 import pytest
 from assemblyai_agents import ToolContext, VoiceAgent, tool
 from assemblyai_agents.byo import say
-from assemblyai_agents.serving import PRE_CONNECT_RESPONSE_LIMIT_BYTES, serve
+from assemblyai_agents.serving import (
+    PRE_CONNECT_RESPONSE_LIMIT_BYTES,
+    REFUSAL_DETAIL_LIMIT,
+    Refused,
+    serve,
+)
 from pydantic import BaseModel
 
 SECRET = "s3cret"
 WEBHOOK_SECRET = "whsec_" + "a" * 40
+# The shape a transcript produces when the caller reads a card number out.
+SPOKEN_CARD = "4111 1111 1111 1111"
 
 
 class Order(BaseModel):
@@ -169,6 +177,63 @@ def test_a_bad_argument_is_refused_before_the_tool_runs(served):
     base, _, _ = served
     status, _, _ = call(base, "/tools/lookup_order", body={"order_id": "W1", "count": "many"})
     assert status == 422
+
+
+def test_a_bad_argument_never_sends_the_value_back(served):
+    # A tool argument is whatever the caller said out loud, and pydantic quotes
+    # the value it rejected in its own message. So the refusal names the
+    # argument and nothing else.
+    base, _, _ = served
+    status, _, body = call(
+        base, "/tools/lookup_order", body={"order_id": "W1", "count": SPOKEN_CARD}
+    )
+    assert status == 422
+    assert json.loads(body) == {"detail": "bad_arguments: count"}
+    assert SPOKEN_CARD not in body.decode()
+
+
+def test_a_bad_argument_is_still_diagnosable_from_your_own_log(served):
+    # The other half of the same fix. This runs in your container, and that log
+    # line is the only account you get of why a tool would not run — so it keeps
+    # the full message, and gains the argument name pydantic never says.
+    base, _, lines = served
+    call(base, "/tools/lookup_order", body={"order_id": "W1", "count": SPOKEN_CARD})
+
+    rejected = [line for line in lines if "rejected an argument" in line]
+    assert len(rejected) == 1
+    assert "lookup_order" in rejected[0]
+    assert "count" in rejected[0]
+    assert "valid integer" in rejected[0]
+    assert SPOKEN_CARD in rejected[0]
+
+
+def test_a_bad_argument_in_a_query_string_is_answered_the_same_way(served):
+    # A GET tool's arguments arrive as a query string and go through the same
+    # coercion, so the same value must not come back.
+    base, _, _ = served
+    status, _, body = call(
+        base,
+        f"/tools/lookup_order?order_id=W1&count={urllib.parse.quote(SPOKEN_CARD)}",
+        method="GET",
+    )
+    assert status == 422
+    assert json.loads(body) == {"detail": "bad_arguments: count"}
+    assert SPOKEN_CARD not in body.decode()
+
+
+def test_a_refusal_detail_is_bounded_at_the_constructor():
+    # Bounded where a Refused is built rather than where one is logged, so
+    # every site that builds a detail out of a request is covered at once.
+    assert len(Refused(400, "z" * 5000).detail) == REFUSAL_DETAIL_LIMIT
+
+
+def test_an_unknown_tool_name_out_of_the_path_is_answered_with_a_bounded_detail(served):
+    # `run_tool` builds this detail from the URL, which the platform chooses.
+    base, _, _ = served
+    status, _, body = call(base, "/tools/" + "z" * 5000, body={})
+
+    assert status == 404
+    assert len(json.loads(body)["detail"]) == REFUSAL_DETAIL_LIMIT
 
 
 def test_a_tool_request_without_the_secret_is_refused(served):

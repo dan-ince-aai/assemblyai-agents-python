@@ -60,6 +60,18 @@ PRE_CONNECT_RESPONSE_LIMIT_BYTES = 8 * 1024
 # an exception message is where a URL or a key lands by accident.
 _TOOL_RAISED = "tool_raised"
 
+# An argument that does not fit the handler's annotation is answered with this
+# token and the argument's name. The name is safe: `_coerce` only ever sees a
+# key the handler declared, so it is schema rather than anything the caller
+# said. The value is not — pydantic writes it into its own message as
+# `input_value=`, and a tool argument is whatever the caller said out loud.
+_BAD_ARGUMENTS = "bad_arguments"
+
+# A refusal's detail goes to the platform and to your log, and one of them is
+# built from the request path. Bounded at the constructor, so every site that
+# builds a `Refused` is covered rather than each one that sends it.
+REFUSAL_DETAIL_LIMIT = 200
+
 
 def _print(message: str) -> None:
     """Print and flush, because a log you cannot see until the process exits is
@@ -71,9 +83,23 @@ class Refused(Exception):
     """A request that should not be answered, with the status to answer instead."""
 
     def __init__(self, status: int, detail: str) -> None:
+        detail = detail[:REFUSAL_DETAIL_LIMIT]
         super().__init__(detail)
         self.status = status
         self.detail = detail
+
+
+class _BadArgument(Exception):
+    """One argument that did not fit its annotation, and its name.
+
+    Pydantic validates each argument on its own here, so its message says
+    `1 validation error for int` and never which argument that was. The name is
+    carried alongside because it is the part worth answering with.
+    """
+
+    def __init__(self, name: str, error: ValidationError) -> None:
+        super().__init__(f"argument {name!r}: {error}")
+        self.name = name
 
 
 class _Text(str):
@@ -94,7 +120,10 @@ def _coerce(declared: Any, arguments: dict) -> dict:
         annotation = hints.get(name)
         if annotation is None or annotation is ToolContext:
             continue
-        coerced[name] = TypeAdapter(annotation).validate_python(value)
+        try:
+            coerced[name] = TypeAdapter(annotation).validate_python(value)
+        except ValidationError as exc:
+            raise _BadArgument(name, exc) from exc
     return coerced
 
 
@@ -154,8 +183,13 @@ def routes(
             raise Refused(422, "arguments were not a JSON object")
         try:
             arguments = _coerce(declared, arguments)
-        except ValidationError as exc:
-            raise Refused(422, str(exc)) from exc
+        except _BadArgument as exc:
+            # Pydantic's message quotes the value it rejected, and that value is
+            # what the caller said. So the message stays in your own log, where
+            # it is the only account you get of why the tool would not run, and
+            # the platform hears only which argument it was.
+            note(f"tool {name!r} rejected an argument: {exc}")
+            raise Refused(422, f"{_BAD_ARGUMENTS}: {exc.name}") from exc
         try:
             result = asyncio.run(declared.invoke(context=context, **arguments))
         except Exception as exc:
