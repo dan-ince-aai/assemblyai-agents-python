@@ -469,9 +469,13 @@ AssemblyAI is now running ./collections for agent agent_b4c9e0d2...
 
   https://acme-prod--svc-6f1a2c9d4e8b70315a2d6c8f4b9e10a3.modal.run
 
-That address is stable across redeploys. Point the agent's model at it to route
+That address belongs to this deployment. Point the agent's model at it to route
 the conversation through your own code:
   llm=LlmConfigRequest(base_url="https://acme-prod--svc-6f1a....modal.run/v1", model="...", api_key="...")
+
+Deploying again makes a new deployment with a new address. Nothing fails loudly
+when it moves: the agent keeps pointing at the old one. Set the new address on
+the agent after every deploy.
 ```
 
 `main.py` still has to sit at the top of the project, but it is read for a
@@ -481,8 +485,13 @@ already is. If there is none, the deployment ends at `service_unhealthy` and the
 detail says so. A service is never marked `(serving)` in `deployments list`,
 because it attaches no tools; `deployments status ID` is where its address is.
 
-The address is stable for the life of the deployment, so you set it on the agent
-once. Deploy a new version of the code and the same address serves it.
+The address is the deployment's, not the project's. Every `deploy` creates a new
+deployment and the address is derived from its ID, so a redeploy answers on a new
+address and the old one stops serving — two byte-identical packages deploy to two
+different addresses. The agent is not repointed for you, and nothing fails loudly:
+it keeps calling an address that has gone. Read the new address (`deployments
+status ID`, or the line `deploy` prints) and set it on the agent each time you
+deploy.
 
 ### `ToolContext`
 
