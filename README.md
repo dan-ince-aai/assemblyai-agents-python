@@ -469,13 +469,17 @@ AssemblyAI is now running ./collections for agent agent_b4c9e0d2...
 
   https://acme-prod--svc-6f1a2c9d4e8b70315a2d6c8f4b9e10a3.modal.run
 
-That address belongs to this deployment. Point the agent's model at it to route
-the conversation through your own code:
-  llm=LlmConfigRequest(base_url="https://acme-prod--svc-6f1a....modal.run/v1", model="...", api_key="...")
+There is nothing to set on the agent's model. Leave `llm` unset and AssemblyAI
+reads the address off this agent's newest ready service when a session starts,
+so there is no address to copy and no key to invent, and the next deploy moves
+the conversation on its own.
 
-Deploying again makes a new deployment with a new address. Nothing fails loudly
-when it moves: the agent keeps pointing at the old one. Set the new address on
-the agent after every deploy.
+Tools are not resolved that way. A tool declared with a full address is called
+at that exact address, and this deployment's address is its own — the next
+deploy answers on a different one. So a tool pointing at this service has to be
+re-declared against the address above and written to the agent after every
+deploy:
+  t.hosted_at("https://acme-prod--svc-6f1a....modal.run/tools/" + t.name)
 ```
 
 `main.py` still has to sit at the top of the project, but it is read for a
@@ -485,13 +489,24 @@ already is. If there is none, the deployment ends at `service_unhealthy` and the
 detail says so. A service is never marked `(serving)` in `deployments list`,
 because it attaches no tools; `deployments status ID` is where its address is.
 
-The address is the deployment's, not the project's. Every `deploy` creates a new
-deployment and the address is derived from its ID, so a redeploy answers on a new
-address and the old one stops serving — two byte-identical packages deploy to two
-different addresses. The agent is not repointed for you, and nothing fails loudly:
-it keeps calling an address that has gone. Read the new address (`deployments
-status ID`, or the line `deploy` prints) and set it on the agent each time you
-deploy.
+**The agent's model needs no address at all.** An agent that says nothing about
+its `llm` runs on the service deployed to it: AssemblyAI reads the address off
+that agent's newest ready service when a session starts, so nothing is stored on
+the agent and the next deploy moves the conversation with no edit. Set `llm` only
+to point the agent at an endpoint you operate yourself; see *Bring your own LLM*.
+The resolved address ends in `/v1`, so a hosted service answers replies on
+`/v1/chat/completions` — which is what `serve()` mounts already.
+
+**Tools declared with a full address are the exception, and the address is the
+deployment's, not the project's.** Every `deploy` creates a new deployment and the
+address is derived from its ID, so a redeploy answers on a new address and the old
+one stops serving — two byte-identical packages deploy to two different addresses.
+A tool's URL is called exactly as it was stored, so a tool you pointed at this
+service keeps calling an address that has gone, and nothing fails loudly. Read the
+new address (`deployments status ID`, or the line `deploy` prints), re-declare
+those tools against it and write them to the agent each time you deploy. Tools
+that AssemblyAI hosts for you — `deploy --type tools` — carry no address and need
+none of this.
 
 ### `ToolContext`
 
@@ -767,8 +782,10 @@ else. The default is on, and a declaration that turns it off while still naming
 a platform tool in `tools` is refused.
 
 You do not have to operate the server either. `assemblyai-agents deploy ./yourapp
---agent AGENT_ID --type service` hosts it for you and prints the address to put
-in `base_url`; see *Deploying an application instead of tools* above.
+--agent AGENT_ID --type service` hosts it for you — and then the block above is
+not what you write. A hosted service is reached without `base_url` and without
+`api_key`: leave `llm` unset and AssemblyAI resolves the address from the agent's
+own deployment. See *Deploying an application instead of tools* above.
 
 ### `assemblyai_agents.byo` reads the request and answers it
 

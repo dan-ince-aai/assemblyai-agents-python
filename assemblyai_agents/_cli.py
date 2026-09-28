@@ -423,7 +423,7 @@ def _print_service_address(
     out: TextIO,
     err: TextIO,
 ) -> None:
-    """Where the service answers, and the one thing to do with that address.
+    """Where the service answers, and the one thing that still needs the address.
 
     A ready service with no address is the server contradicting itself, so it is
     reported rather than printed as an empty line; the deploy still succeeded,
@@ -442,20 +442,23 @@ def _print_service_address(
     print(f"  {service_url}", file=out)
     print("", file=out)
     print(
-        "That address belongs to this deployment. Point the agent's model at it "
-        "to route the conversation through your own code:",
-        file=out,
-    )
-    print(
-        f'  llm=LlmConfigRequest(base_url="{service_url}/v1", model="...", '
-        f'api_key="...")',
+        "There is nothing to set on the agent's model. Leave `llm` unset and "
+        "AssemblyAI reads the address off this agent's newest ready service "
+        "when a session starts, so there is no address to copy and no key to "
+        "invent, and the next deploy moves the conversation on its own.",
         file=out,
     )
     print("", file=out)
     print(
-        "Deploying again makes a new deployment with a new address. Nothing "
-        "fails loudly when it moves: the agent keeps pointing at the old one. "
-        "Set the new address on the agent after every deploy.",
+        "Tools are not resolved that way. A tool declared with a full address "
+        "is called at that exact address, and this deployment's address is its "
+        "own — the next deploy answers on a different one. So a tool pointing "
+        "at this service has to be re-declared against the address above and "
+        "written to the agent after every deploy:",
+        file=out,
+    )
+    print(
+        f'  t.hosted_at("{service_url}/tools/" + t.name)',
         file=out,
     )
 

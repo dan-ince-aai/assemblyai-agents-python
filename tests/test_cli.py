@@ -347,18 +347,21 @@ def test_a_service_deploy_prints_the_address_it_answers_on(make_client, recorder
         deployment_type="service",
     )
 
-    # The address is the whole point of the kind: without it the customer has
-    # nothing to point the agent's model at.
+    # The address is still worth printing: a tool declared with a full address
+    # is the one thing that has to be written against it.
     assert SERVICE_URL in out
-    assert f"{SERVICE_URL}/v1" in out
+    assert f"{SERVICE_URL}/tools/" in out
     assert "AssemblyAI is now running the tools" not in out
 
 
-def test_a_service_deploy_says_the_address_is_this_deployments(make_client, recorder):
-    # Every deploy creates a new deployment and the address is derived from its
-    # ID, so a redeploy answers somewhere else and the old address stops
-    # serving. A customer who set it on the agent once is left pointing at a
-    # dead service, and nothing fails loudly.
+def test_a_service_deploy_does_not_tell_the_customer_to_set_the_address(
+    make_client, recorder
+):
+    # AssemblyAI reads the address off the agent's newest ready service when a
+    # session starts, so an agent that says nothing about its model follows
+    # every deploy on its own. Telling a customer to store the address and a
+    # key is telling them to keep doing by hand what already happens, and a
+    # stored address is one a later deploy leaves stale.
     _, out, _, _ = _run_deploy(
         make_client,
         recorder,
@@ -369,10 +372,35 @@ def test_a_service_deploy_says_the_address_is_this_deployments(make_client, reco
         deployment_type="service",
     )
 
+    assert "nothing to set on the agent's model" in out
+    assert "leave `llm` unset" in out.lower()
+    # The two field names the old advice handed over. Neither belongs in an
+    # agent that runs on the service it was deployed to.
+    assert "base_url" not in out
+    assert "api_key" not in out
     assert "stable" not in out
-    assert "belongs to this deployment" in out
-    assert "new address" in out
+
+
+def test_a_service_deploy_says_a_tool_with_an_address_is_the_exception(
+    make_client, recorder
+):
+    # A tool's URL is sent as stored, not resolved from the deployment, so a
+    # tool pointing at this service does need re-declaring after every deploy.
+    # That is the part the old advice left out entirely.
+    _, out, _, _ = _run_deploy(
+        make_client,
+        recorder,
+        [
+            _created(deployment_type="service"),
+            _polled("ready", deployment_type="service", service_url=SERVICE_URL),
+        ],
+        deployment_type="service",
+    )
+
+    assert "Tools are not resolved that way" in out
+    assert "re-declared" in out
     assert "after every deploy" in out
+    assert f'hosted_at("{SERVICE_URL}/tools/"' in out
 
 
 def test_a_ready_service_with_no_address_says_so_rather_than_printing_a_blank(
