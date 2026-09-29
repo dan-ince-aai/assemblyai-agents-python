@@ -1,3 +1,4 @@
+import re
 import textwrap
 from dataclasses import dataclass
 from typing import Optional
@@ -21,6 +22,8 @@ from .models.rest import (
     TransferTarget,
     VoiceConfig,
 )
+
+_REASONING_EFFORT_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -94,6 +97,7 @@ class VoiceAgent:
         )
         _require_unique_tool_names(self.tools)
         _require_base_url_with_key(self.llm)
+        _require_reasoning_effort_format(self.llm)
         validate_pre_connect(self.pre_connect)
         require_trunk_for_transfers(self.transfer_targets, self.outbound_trunk_id)
         if self.caller_id is not None:
@@ -127,9 +131,14 @@ class VoiceAgent:
         # round trip: re-validating a dumped payload would refill every default
         # the create model deliberately left unset, `execution_mode` included.
         created = self.to_request()
-        return AgentUpdateRequest(
-            **{name: getattr(created, name) for name in AgentCreateRequest.model_fields}
-        )
+        fields = {
+            name: getattr(created, name) for name in AgentCreateRequest.model_fields
+        }
+        if self.llm is not None and self.llm.reasoning_effort is None:
+            # The server keeps an omitted reasoning_effort, and the payload drops
+            # None, so "" is the only way this declaration can say "unset".
+            fields["llm"] = [self.llm.model_copy(update={"reasoning_effort": ""})]
+        return AgentUpdateRequest(**fields)
 
     def tool_definitions(self) -> Optional[list[PlaintextToolDefinition]]:
         if self.tools is None:
@@ -175,6 +184,17 @@ def _require_base_url_with_key(llm: Optional[LlmConfigRequest]) -> None:
         "endpoint's base_url, or leave `llm` unset, which is how an agent says "
         "it runs on the model endpoint AssemblyAI supplies from its own "
         "deployment."
+    )
+
+
+def _require_reasoning_effort_format(llm: Optional[LlmConfigRequest]) -> None:
+    effort = None if llm is None else llm.reasoning_effort
+    if not effort or _REASONING_EFFORT_RE.fullmatch(effort):
+        return
+    raise ConfigurationError(
+        f"llm.reasoning_effort {effort!r} must be one word of up to 32 lowercase "
+        "letters, digits, '_' or '-', starting with a letter, such as 'none', "
+        "'low', 'medium' or 'high'. The server refuses anything else."
     )
 
 

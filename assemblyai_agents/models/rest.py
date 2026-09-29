@@ -231,6 +231,12 @@ class LlmConfigRequest(BaseModel):
         description='API key for the endpoint. Write-only; never returned.',
         title='Api Key',
     )
+    reasoning_effort: str | None = Field(
+        None,
+        description='Sent as `reasoning_effort` in the chat-completions request body. When unset, nothing is sent, except for models named exactly gpt-5.1, gpt-5.2 or gpt-5.4 (`none` is sent; for gpt-5.2 and gpt-5.4 only when the agent has no tools) or gpt-5, gpt-5-mini or gpt-5-nano (`minimal` is sent). OpenAI accepts `none`, `minimal`, `low`, `medium`, `high` and `xhigh`; other providers may use other words, so any word of up to 32 lowercase letters, digits, `_` or `-`, starting with a letter, is accepted and the provider decides whether it is valid. gpt-5.6 and gpt-6 family models require `none` when the agent has tools. For gpt-5.2 and gpt-5.4 family models it is not sent when the agent has tools, including tools AssemblyAI adds such as call transfer. On update, omit it to keep the stored value while `base_url` and `model` stay the same; changing either clears it. Send `null` or `""` to unset it.',
+        examples=['none'],
+        title='Reasoning Effort',
+    )
 
 
 class LlmConfigResponse(BaseModel):
@@ -241,6 +247,11 @@ class LlmConfigResponse(BaseModel):
     )
     model: str = Field(
         ..., description='Model name used for the conversational LLM.', title='Model'
+    )
+    reasoning_effort: str | None = Field(
+        None,
+        description='The stored `reasoning_effort`; null when unset. See the request field for when it is sent to the model.',
+        title='Reasoning Effort',
     )
 
 

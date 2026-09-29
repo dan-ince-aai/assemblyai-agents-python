@@ -773,6 +773,18 @@ agent = VoiceAgent(
 )
 ```
 
+`reasoning_effort` is sent in the request body only when set. gpt-5.6 and gpt-6
+models need `"none"` when the agent has tools:
+
+```python
+llm=LlmConfigRequest(
+    base_url="https://api.openai.com/v1",
+    model="gpt-5.6-luna",
+    api_key="...",
+    reasoning_effort="none",
+)
+```
+
 If your endpoint cannot answer with a tool call at all, add
 `platform_tools_enabled=False` to the declaration. AssemblyAI then sends the
 model only the tools you defined and none of its own. Exactly one tool of ours
@@ -912,7 +924,7 @@ short-lived token, opens the WebSocket, binds the agent, streams the microphone
 in and plays replies out (with barge-in), and answers `tool.call` events for
 client-resident tools with the functions in `tools=`. Callbacks: `on_ready`,
 `on_user_transcript`, `on_agent_transcript`, `on_agent_delta`, `on_agent_audio`,
-`on_error`. Pass `audio=False` to disable device audio and handle `reply.audio`
+`on_error`, `on_reply_error`. Pass `audio=False` to disable device audio and handle `reply.audio`
 events yourself.
 
 For your own transport (a browser, a telephony bridge, a test harness) use the
@@ -922,7 +934,8 @@ session it is built on:
 import asyncio
 from assemblyai_agents import AsyncClient, base64_to_pcm
 from assemblyai_agents.models.ws import (
-    ReplyAudio, SessionEnded, SessionReady, ToolCall, TranscriptAgent, TranscriptUser,
+    ReplyAudio, ReplyError, SessionEnded, SessionReady, ToolCall, TranscriptAgent,
+    TranscriptUser,
 )
 
 async def main():
@@ -943,6 +956,8 @@ async def main():
                     case ToolCall():                      # only for client-resident tools
                         result = await lookup_order(**event.arguments)
                         await session.send_tool_result(event.call_id, str(result))
+                    case ReplyError():                    # your own LLM request failed
+                        print(event.code, event.status_code, event.message)
                     case SessionEnded():
                         break
 
@@ -966,6 +981,7 @@ Server → client events (all pydantic models in `assemblyai_agents.models.ws`):
 | `session.ended` | `SessionEnded` | durations |
 | `input.speech.started` / `.stopped` | `InputSpeechStarted` / `InputSpeechStopped` | barge-in cue |
 | `reply.started` / `reply.audio` / `reply.done` | `ReplyStarted` / `ReplyAudio` / `ReplyDone` | `ReplyAudio.data` is base64 PCM |
+| `reply.error` | `ReplyError` | your LLM request failed: `code` (`llm_request_rejected`, `llm_provider_error`, `llm_rate_limited`, `llm_timeout`, `llm_endpoint_blocked`, `llm_unreachable`; open set), `message`, `status_code`, `retryable` |
 | `tool.call` | `ToolCall` | `call_id`, `name`, `arguments` |
 | `transcript.user` | `TranscriptUser` | final user turn |
 | `transcript.agent` / `.delta` | `TranscriptAgent` / `TranscriptAgentDelta` | final and streaming agent text |
