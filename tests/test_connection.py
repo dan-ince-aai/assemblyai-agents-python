@@ -18,6 +18,7 @@ from assemblyai_agents.models.ws import (
     InputSpeechStarted,
     ReplyAudio,
     ReplyDone,
+    ReplyError,
     ReplyStarted,
     SessionEnded,
     ToolCall,
@@ -750,3 +751,33 @@ async def test_tool_router_handle_dispatches_and_errors():
     pre = len(session.tool_results)
     await router.handle(TranscriptUser(item_id="u1", text="x"), session)
     assert len(session.tool_results) == pre, "non-ToolCall events are ignored"
+
+
+async def test_reply_error_reaches_on_reply_error_not_on_error(monkeypatch):
+    reply_errors, session_errors = [], []
+    failure = ReplyError(
+        reply_id="r1",
+        code="llm_request_rejected",
+        message="reasoning_effort is not supported",
+        retryable=False,
+        status_code=400,
+    )
+    events = [
+        ReplyStarted(reply_id="r1", item_id="i1"),
+        failure,
+        ReplyDone(reply_id="r1", status="completed"),
+        TranscriptUser(item_id="u2", text="still here"),
+        SessionEnded(session_duration_seconds=1.0),
+    ]
+    agent, _, _, _ = _make_agent(events, audio=False)
+    agent.on_reply_error(reply_errors.append)
+    agent.on_error(session_errors.append)
+    users = []
+    agent.on_user_transcript(users.append)
+
+    async with agent:
+        await agent.run()
+
+    assert reply_errors == [failure]
+    assert session_errors == []
+    assert users == ["still here"]

@@ -9,6 +9,7 @@ from ._exceptions import RealtimeError
 from .audio_io import DeviceAudioError, PlaybackSink, microphone_stream
 from .models.ws import (
     ReplyAudio,
+    ReplyError,
     SessionEnded,
     SessionError,
     SessionReady,
@@ -99,6 +100,7 @@ class AgentConnection:
             "agent_delta": [],
             "agent_audio": [],
             "error": [],
+            "reply_error": [],
         }
 
     def _register(self, slot: str, fn: Callable) -> Callable:
@@ -123,6 +125,10 @@ class AgentConnection:
 
     def on_error(self, fn: Callable) -> Callable:
         return self._register("error", fn)
+
+    def on_reply_error(self, fn: Callable) -> Callable:
+        # One reply failed (the agent's own LLM request); the session goes on.
+        return self._register("reply_error", fn)
 
     def tool(self, name: str) -> Callable[[Callable], Callable]:
         def _decorator(fn: Callable) -> Callable:
@@ -279,6 +285,8 @@ class AgentConnection:
             await self._fan_out("ready", event)
         elif isinstance(event, SessionError):
             await self._fan_out("error", event)
+        elif isinstance(event, ReplyError):
+            await self._fan_out("reply_error", event)
 
     async def _fan_out(self, slot: str, value: Any) -> None:
         for fn in self._callbacks[slot]:

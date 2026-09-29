@@ -86,6 +86,44 @@ def test_an_api_key_with_no_base_url_names_the_rule():
     assert "leave `llm` unset" in message
 
 
+@pytest.mark.parametrize("effort", ["High", "very high", "x" * 33, "1low"])
+def test_a_reasoning_effort_the_server_would_refuse_names_the_rule(effort):
+    llm = LlmConfigRequest(
+        base_url="https://api.openai.com/v1",
+        model="gpt-5.6-luna",
+        api_key="k",
+        reasoning_effort=effort,
+    )
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        VoiceAgent(name="Pizza Line", voice="ivy", system_prompt=PROMPT, llm=llm)
+    assert "reasoning_effort" in str(exc_info.value)
+
+
+def test_reasoning_effort_reaches_the_payload_only_when_set():
+    base = {
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-5.6-luna",
+        "api_key": "k",
+    }
+    unset = VoiceAgent(
+        name="Pizza Line",
+        voice="ivy",
+        system_prompt=PROMPT,
+        llm=LlmConfigRequest(**base),
+    )
+    set_ = VoiceAgent(
+        name="Pizza Line",
+        voice="ivy",
+        system_prompt=PROMPT,
+        llm=LlmConfigRequest(**base, reasoning_effort="none"),
+    )
+
+    assert "reasoning_effort" not in _create_payload(unset)["llm"][0]
+    assert _create_payload(set_)["llm"][0]["reasoning_effort"] == "none"
+    assert _update_payload(unset)["llm"][0]["reasoning_effort"] == ""
+
+
 def test_naming_only_a_model_is_allowed_through():
     # Picking a model on the endpoint AssemblyAI supplies, without naming an
     # address. `models/rest.py` is generated and still requires all three
@@ -193,6 +231,29 @@ def test_the_update_request_sends_the_whole_declaration():
         voice=VoiceConfig(voice_id="ivy"),
         platform_tools_enabled=True,
     )
+
+
+def test_an_update_clears_a_reasoning_effort_the_declaration_no_longer_sets():
+    llm = LlmConfigRequest(
+        base_url="https://api.openai.com/v1", model="gpt-5.6-luna", api_key="k"
+    )
+    agent = VoiceAgent(name="Pizza Line", voice="ivy", system_prompt=PROMPT, llm=llm)
+
+    assert agent.to_update_request().llm[0].reasoning_effort == ""
+    # Create has nothing stored to keep, so it sends nothing.
+    assert agent.to_request().llm[0].reasoning_effort is None
+
+
+def test_an_update_sends_the_reasoning_effort_the_declaration_sets():
+    llm = LlmConfigRequest(
+        base_url="https://api.openai.com/v1",
+        model="gpt-5.6-luna",
+        api_key="k",
+        reasoning_effort="none",
+    )
+    agent = VoiceAgent(name="Pizza Line", voice="ivy", system_prompt=PROMPT, llm=llm)
+
+    assert agent.to_update_request().llm[0].reasoning_effort == "none"
 
 
 def test_the_system_prompt_is_dedented_and_stripped():

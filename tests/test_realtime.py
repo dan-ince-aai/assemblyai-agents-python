@@ -6,6 +6,7 @@ from assemblyai_agents import (
     AsyncClient,
     Client,
     RealtimeError,
+    realtime,
 )
 from assemblyai_agents.models.ws import (
     Code,
@@ -13,6 +14,7 @@ from assemblyai_agents.models.ws import (
     InputSpeechStopped,
     ReplyAudio,
     ReplyDone,
+    ReplyError,
     ReplyStarted,
     SessionEnded,
     SessionError,
@@ -744,3 +746,50 @@ async def test_auto_resume_connect_error_retries(monkeypatch):
     assert [type(e) for e in received] == [SessionReady, SessionReady]
     assert len(connects) == 3
     assert _bearer(connects[2]) == "Bearer rt-1"
+
+
+# --- (g) reply.error: typed for this SDK, harmless for an older one ---------
+
+
+_REPLY_ERROR = {
+    "type": "reply.error",
+    "reply_id": "r1",
+    "code": "llm_provider_error",
+    "message": "The model provider returned an error.",
+    "retryable": True,
+    "status_code": 502,
+    "provider_code": None,
+    "provider_param": None,
+    "timestamp": 1.0,
+}
+_AFTER = {"type": "reply.done", "reply_id": "r1", "status": "completed"}
+
+
+@pytest.mark.asyncio
+async def test_reply_error_parses_to_its_model(monkeypatch):
+    future_code = {**_REPLY_ERROR, "code": "llm_some_future_code"}
+    fake = FakeConnection(
+        inbound=[_frame(_REPLY_ERROR), _frame(future_code), _frame(_AFTER)]
+    )
+    session, _ = await _open_session(monkeypatch, fake)
+
+    received = [event async for event in session]
+    assert isinstance(received[0], ReplyError)
+    assert received[0].status_code == 502
+    assert received[0].retryable is True
+    # An open string, so a code added later never breaks this SDK.
+    assert isinstance(received[1], ReplyError)
+    assert received[1].code == "llm_some_future_code"
+    assert isinstance(received[2], ReplyDone)
+
+
+@pytest.mark.asyncio
+async def test_an_sdk_without_reply_error_skips_it_and_carries_on(monkeypatch):
+    monkeypatch.delitem(realtime._SERVER_EVENTS, "reply.error")
+    fake = FakeConnection(inbound=[_frame(_REPLY_ERROR), _frame(_AFTER)])
+    session, _ = await _open_session(monkeypatch, fake)
+
+    received = [event async for event in session]
+    assert isinstance(received[0], UnknownEvent)
+    assert received[0].type == "reply.error"
+    assert isinstance(received[1], ReplyDone)
