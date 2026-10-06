@@ -461,11 +461,100 @@ def test_hosted_at_carries_headers_and_method():
     assert [(h.name, h.value) for h in http.headers] == [("Authorization", "Bearer s")]
 
 
-def test_hosted_at_refuses_a_relative_url():
-    # The platform fetches the address itself, so a path alone is unreachable
-    # and would only surface as the model apologising to a caller.
-    with pytest.raises(ConfigurationError, match="not an http"):
-        _shelf().hosted_at("/tools/check_stock")
+def test_hosted_at_takes_a_path_on_the_hosted_service():
+    # A path is resolved per call against whichever deployment of this agent's
+    # service is live, so it is written to the agent once and survives every
+    # deploy. It is the only form that does.
+    bound = _shelf().hosted_at("/tools/check_stock")
+    assert bound.definition().http.url == "/tools/check_stock"
+    assert bound.definition().http.http_method == HttpMethod.POST
+
+
+def test_a_path_carries_headers_and_method_like_any_other_address():
+    bound = _shelf().hosted_at(
+        "/stock",
+        http_method=HttpMethod.GET,
+        headers=[HttpToolHeaderInput(name="Authorization", value="Bearer s")],
+    )
+    http = bound.definition().http
+    assert http.url == "/stock"
+    assert http.http_method == HttpMethod.GET
+    assert [(h.name, h.value) for h in http.headers] == [("Authorization", "Bearer s")]
+
+
+def test_hosted_at_refuses_a_deployments_own_address():
+    # The API refuses this write, because the address names one deployment and
+    # stops answering when the agent is deployed again. The refusal names the
+    # path to use instead, taken from the address that was passed.
+    address = (
+        "https://acme-prod--svc-6f1a2c9d4e8b70315a2d6c8f4b9e10a3.modal.run"
+        "/tools/check_stock"
+    )
+    with pytest.raises(ConfigurationError) as exc_info:
+        _shelf().hosted_at(address)
+
+    message = str(exc_info.value)
+    assert "one deployment" in message
+    assert "`/tools/check_stock`" in message
+
+
+def test_an_endpoint_you_run_on_the_same_provider_is_not_refused():
+    # The rule is drawn at the label AssemblyAI mints, not at the provider. A
+    # customer is entitled to run their own app there.
+    bound = _shelf().hosted_at("https://acme-prod--crm.modal.run/tools/check_stock")
+    assert bound.definition().http.url.endswith("/tools/check_stock")
+
+
+def test_hosted_at_refuses_a_string_that_is_neither():
+    with pytest.raises(ConfigurationError) as exc_info:
+        _shelf().hosted_at("tools/check_stock")
+
+    message = str(exc_info.value)
+    assert "starts with `/`" in message
+    assert "http(s)" in message
+
+
+def test_hosted_at_refuses_a_path_that_carries_a_host():
+    # `//host/x` starts with a slash but is protocol-relative, so it would be
+    # stored as a path and resolved against the service as nonsense.
+    with pytest.raises(ConfigurationError, match="carries a scheme or a host"):
+        _shelf().hosted_at("//evil.example/tools/check_stock")
+
+
+def test_the_decorator_answers_to_the_same_address_rule():
+    # `http=` and `hosted_at` write the same field. A deployment address pasted
+    # into the decorator reads like a constant, which is what makes it likely.
+    with pytest.raises(ConfigurationError, match="one deployment"):
+
+        @tool(
+            http=PlaintextHttpToolConfig(
+                url=(
+                    "https://acme-prod--svc-"
+                    "6f1a2c9d4e8b70315a2d6c8f4b9e10a3.modal.run/tools/check_stock"
+                ),
+                http_method=HttpMethod.POST,
+            )
+        )
+        def check_stock(item: str) -> dict:
+            """Check whether an item is on the shelf.
+
+            Args:
+                item: What the caller asked for.
+            """
+            return {}
+
+
+def test_the_decorator_takes_a_path():
+    @tool(http=PlaintextHttpToolConfig(url="/tools/check_stock"))
+    def check_stock(item: str) -> dict:
+        """Check whether an item is on the shelf.
+
+        Args:
+            item: What the caller asked for.
+        """
+        return {}
+
+    assert check_stock.definition().http.url == "/tools/check_stock"
 
 
 async def test_a_bound_tool_still_runs():

@@ -400,7 +400,7 @@ def deploy(
     if status == STATUS_READY:
         print(f"Deployed in {_format_elapsed(elapsed)}.", file=out)
         if deployment_type == TYPE_SERVICE:
-            _print_service_address(
+            _print_service_ready(
                 body.get("service_url"), deployment_id, path, agent_id, out, err
             )
         else:
@@ -415,7 +415,7 @@ def deploy(
     return 1
 
 
-def _print_service_address(
+def _print_service_ready(
     service_url: Optional[str],
     deployment_id: str,
     path: str,
@@ -423,42 +423,51 @@ def _print_service_address(
     out: TextIO,
     err: TextIO,
 ) -> None:
-    """Where the service answers, and the one thing that still needs the address.
+    """What a customer can act on: the deployment, and how to address it.
 
-    A ready service with no address is the server contradicting itself, so it is
-    reported rather than printed as an empty line; the deploy still succeeded,
-    and `deployments status` will show the address once it is written.
+    The address this deployment answers on is deliberately not printed. It names
+    this deployment and dies with it, the API refuses it on an agent, and every
+    way of reaching the service resolves it per call from the agent ID instead,
+    so printing it offers nothing that can be written down and one thing that
+    cannot. A ready service the server reported no address for is the server
+    contradicting itself and is still worth saying, because sessions on this
+    agent have nothing to resolve to.
     """
     if not service_url:
         print(
-            f"AssemblyAI is running {path} for agent {agent_id}, but reported no "
-            f"address for it. Read it with: {PROG} deployments status "
-            f"{deployment_id}",
+            f"AssemblyAI is running {path} for agent {agent_id} as deployment "
+            f"{deployment_id}, but reported no address for it, so a session on "
+            f"this agent has nothing to resolve to. Quote that deployment ID to "
+            f"support.",
             file=err,
         )
         return
-    print(f"AssemblyAI is now running {path} for agent {agent_id}.", file=out)
-    print("", file=out)
-    print(f"  {service_url}", file=out)
+    print(
+        f"AssemblyAI is now running {path} for agent {agent_id} as deployment "
+        f"{deployment_id}.",
+        file=out,
+    )
     print("", file=out)
     print(
         "There is nothing to set on the agent's model. Leave `llm` unset and "
-        "AssemblyAI reads the address off this agent's newest ready service "
-        "when a session starts, so there is no address to copy and no key to "
-        "invent, and the next deploy moves the conversation on its own.",
+        "AssemblyAI resolves this agent's newest ready service when a session "
+        "starts, so there is no address to copy and no key to invent, and the "
+        "next deploy moves the conversation on its own.",
         file=out,
     )
     print("", file=out)
     print(
-        "Tools are not resolved that way. A tool declared with a full address "
-        "is called at that exact address, and this deployment's address is its "
-        "own — the next deploy answers on a different one. So a tool pointing "
-        "at this service has to be re-declared against the address above and "
-        "written to the agent after every deploy:",
+        "A tool or pre-connect request this service answers is declared as the "
+        "path alone, which is resolved the same way, per call. Write it to the "
+        "agent once and every later deploy is picked up with no edit:",
         file=out,
     )
     print(
-        f'  t.hosted_at("{service_url}/tools/" + t.name)',
+        '  t.hosted_at("/tools/" + t.name)',
+        file=out,
+    )
+    print(
+        '  PreConnectRequest(url="/pre-connect/lookup", timeout_ms=400)',
         file=out,
     )
 
@@ -720,9 +729,11 @@ def deployments_status(
     print(f"  agent    {body.get('agent_id')}", file=out)
     print(f"  type     {body.get('deployment_type') or TYPE_TOOLS}", file=out)
     print(f"  status   {status}", file=out)
-    service_url = body.get("service_url")
-    if service_url:
-        print(f"  address  {service_url}", file=out)
+    # The address a service answers on is not reported. It belongs to this
+    # deployment alone, the API refuses it on an agent, and everything that
+    # calls the service resolves it per call from the agent ID — so the only
+    # use a customer could put it to is the one that breaks on the next deploy.
+    # `client.deployments.get(id).service_url` still carries it for support.
     print(f"  created  {body.get('created_at')}", file=out)
     print(f"  updated  {body.get('updated_at')}", file=out)
 

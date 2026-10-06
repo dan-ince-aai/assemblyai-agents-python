@@ -200,6 +200,10 @@ decorator runs at import and the address does not exist yet. `hosted_at` returns
 a new tool bound to an address and leaves the original alone, so a module-level
 `TOOLS` stays importable by tests.
 
+`hosted_at` also takes a path — `t.hosted_at(f"/tools/{t.name}")` — which is how
+you point a tool at the service AssemblyAI hosts for the agent rather than at a
+server of your own. See *Deploying an application instead of tools*.
+
 `serve()` answers every route the platform will call, read off the declaration,
 on the standard library alone: `/tools/{name}` per tool, the reply endpoint
 when you pass `reply=`, a route per pre-connect request, webhook delivery and
@@ -451,10 +455,9 @@ for deployment in client.deployments.list(agent_id="agent_b4c9e0d2..."):
 ### Deploying an application instead of tools
 
 The same upload can be run a second way. `--type service` runs your project as a
-long-lived web application and prints the address it answers on, instead of
-reading tools out of it. That is how you host the endpoint from *Bring your own
-LLM* without operating a server. Which one you get is never guessed from the
-code, because one project can hold both.
+long-lived web application instead of reading tools out of it. That is how you
+host the endpoint from *Bring your own LLM* without operating a server. Which one
+you get is never guessed from the code, because one project can hold both.
 
 ```console
 $ assemblyai-agents deploy ./collections --agent agent_b4c9e0d2... --type service
@@ -465,21 +468,19 @@ Created deployment agentdep_cc3b6476...
   building (4s)
   ready (96s)
 Deployed in 96s.
-AssemblyAI is now running ./collections for agent agent_b4c9e0d2...
-
-  https://acme-prod--svc-6f1a2c9d4e8b70315a2d6c8f4b9e10a3.modal.run
+AssemblyAI is now running ./collections for agent agent_b4c9e0d2... as deployment
+agentdep_cc3b6476...
 
 There is nothing to set on the agent's model. Leave `llm` unset and AssemblyAI
-reads the address off this agent's newest ready service when a session starts,
-so there is no address to copy and no key to invent, and the next deploy moves
-the conversation on its own.
+resolves this agent's newest ready service when a session starts, so there is no
+address to copy and no key to invent, and the next deploy moves the conversation
+on its own.
 
-Tools are not resolved that way. A tool declared with a full address is called
-at that exact address, and this deployment's address is its own — the next
-deploy answers on a different one. So a tool pointing at this service has to be
-re-declared against the address above and written to the agent after every
-deploy:
-  t.hosted_at("https://acme-prod--svc-6f1a....modal.run/tools/" + t.name)
+A tool or pre-connect request this service answers is declared as the path alone,
+which is resolved the same way, per call. Write it to the agent once and every
+later deploy is picked up with no edit:
+  t.hosted_at("/tools/" + t.name)
+  PreConnectRequest(url="/pre-connect/lookup", timeout_ms=400)
 ```
 
 `main.py` still has to sit at the top of the project, but it is read for a
@@ -487,26 +488,47 @@ module-level `app` (or `application`) rather than for `@tool()` functions — th
 same thing `uvicorn main:app` runs, and what a FastAPI or Starlette instance
 already is. If there is none, the deployment ends at `service_unhealthy` and the
 detail says so. A service is never marked `(serving)` in `deployments list`,
-because it attaches no tools; `deployments status ID` is where its address is.
+because it attaches no tools.
 
-**The agent's model needs no address at all.** An agent that says nothing about
-its `llm` runs on the service deployed to it: AssemblyAI reads the address off
-that agent's newest ready service when a session starts, so nothing is stored on
-the agent and the next deploy moves the conversation with no edit. Set `llm` only
-to point the agent at an endpoint you operate yourself; see *Bring your own LLM*.
-The resolved address ends in `/v1`, so a hosted service answers replies on
-`/v1/chat/completions` — which is what `serve()` mounts already.
+**You never see the address a service answers on, and never need it.** Every
+`deploy` creates a new deployment and the address is derived from its ID, so a
+redeploy answers on a new one and the old stops serving — two byte-identical
+packages deploy to two different addresses. Nothing on an agent stores it:
+AssemblyAI resolves it from the agent ID when a call starts. That is why no
+command prints it, and why the API refuses an agent that names one — the write
+would succeed and the agent would break on the next deploy.
 
-**Tools declared with a full address are the exception, and the address is the
-deployment's, not the project's.** Every `deploy` creates a new deployment and the
-address is derived from its ID, so a redeploy answers on a new address and the old
-one stops serving — two byte-identical packages deploy to two different addresses.
-A tool's URL is called exactly as it was stored, so a tool you pointed at this
-service keeps calling an address that has gone, and nothing fails loudly. Read the
-new address (`deployments status ID`, or the line `deploy` prints), re-declare
-those tools against it and write them to the agent each time you deploy. Tools
-that AssemblyAI hosts for you — `deploy --type tools` — carry no address and need
-none of this.
+**The agent's model needs no address.** An agent that says nothing about its
+`llm` runs on the service deployed to it. Set `llm` only to point the agent at an
+endpoint you operate yourself; see *Bring your own LLM*. The resolved address ends
+in `/v1`, so a hosted service answers replies on `/v1/chat/completions` — which is
+what `serve()` mounts already.
+
+**A tool or a pre-connect request on that service is declared as a path.** Write
+the route alone, with no scheme and no host, and AssemblyAI calls it on whichever
+deployment is live when the call arrives:
+
+```python
+tools = [t.hosted_at(f"/tools/{t.name}") for t in TOOLS]
+pre_connect = [PreConnectRequest(url="/pre-connect/whois", timeout_ms=400)]
+```
+
+That is written to the agent once. There is nothing to rewrite after a deploy,
+no address to read back, and no window in which the agent points at a deployment
+that has gone. An absolute address is for an endpoint *you* run — your own API,
+or a tunnel in development — and one read off a deployment of this service is
+refused, by this package at import time and by the API on the write.
+
+**A pre-connect chain on the hosted service has a smaller time budget.** The
+service has to start for the call before the chain can run, and the caller's
+carrier stops ringing either way, so the two share one window and the chain gets
+5000 ms of it. An entry that states no `timeout_ms` claims the platform's full
+10000 ms, which overruns it on its own — so state `timeout_ms` on every entry
+once any of them is a path. A chain entirely on your own servers waits for
+nothing and keeps the full reservation.
+
+Tools that AssemblyAI hosts for you — `deploy --type tools` — carry no address at
+all and need none of this.
 
 ### `ToolContext`
 
@@ -552,6 +574,15 @@ agent = VoiceAgent(
     ],
 )
 ```
+
+A `url` is either an absolute `https://` address of a server you run, as above,
+or a path — `url="/pre-connect/whois"` — on the service AssemblyAI hosts for the
+agent, resolved per call. A path is the form to use once the service is
+deployed: it is written to the agent once and survives every later deploy.
+Whenever any entry is a path, state `timeout_ms` on *every* entry — the chain
+shares one window with the service's start and gets 5000 ms of it, while an
+entry that states no timeout claims the platform's full 10000 ms and overruns
+that on its own.
 
 Your endpoint has to answer within the request's timeout (800 ms ceiling per
 request; `timeout_ms` only lowers it). What a failure does is each entry's own

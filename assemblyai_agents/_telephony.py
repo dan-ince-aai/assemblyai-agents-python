@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional, Union
 
 from ._exceptions import ConfigurationError
+from ._urls import check_called_address, is_hosted_service_path
 from .models.rest import (
     HttpMethod,
     HttpToolHeaderInput,
@@ -20,6 +21,14 @@ MAX_RING_TIMEOUT = 600
 MIN_PRE_CONNECT_TIMEOUT_MS = 1
 MAX_PRE_CONNECT_TIMEOUT_MS = 800
 MAX_PRE_CONNECT_REQUESTS = 2
+
+# What an entry that states no `timeout_ms` claims: the platform's own ceiling,
+# which is far above the one this package will let you write.
+UNSET_PRE_CONNECT_TIMEOUT_MS = 10_000
+# What the whole chain may claim when any entry in it is addressed at the
+# service AssemblyAI hosts. Mirrors the API's allowance, so a chain it would
+# refuse is refused here instead.
+HOSTED_SERVICE_PRE_CONNECT_ALLOWANCE_MS = 5_000
 
 # Facts about the call itself that the platform supplies. Any entry may name
 # these in `sends` without an earlier entry having captured them. They are not
@@ -196,11 +205,9 @@ class PreConnectRequest:
     on_failure: str = CONTINUE_ON_FAILURE
 
     def __post_init__(self) -> None:
-        if not self.url.startswith("https://"):
-            raise ConfigurationError(
-                f"pre-connect url={self.url!r} is not https. The API accepts https "
-                f"endpoints only."
-            )
+        check_called_address(
+            self.url, subject="pre-connect url: ", allow_http=False
+        )
         if self.method not in HTTP_METHODS:
             raise ConfigurationError(
                 f"pre-connect url={self.url!r}: method={self.method!r} is not one of "
@@ -305,6 +312,46 @@ def validate_pre_connect(entries: Optional[list[PreConnectRequest]]) -> None:
                     f"first."
                 )
             resolvable.add(name)
+    _check_hosted_service_budget(entries)
+
+
+def _check_hosted_service_budget(entries: list[PreConnectRequest]) -> None:
+    """Refuse a chain the hosted service leaves no room to run.
+
+    A chain with an entry on the service AssemblyAI hosts cannot start until
+    that service has an address for this call, and the address has to exist
+    before the call is answered, so the start and the chain share one window.
+    A chain of your own endpoints waits for nothing and keeps the whole
+    reservation, which is why this is only checked when a path is in it.
+    """
+    if not any(is_hosted_service_path(entry.url) for entry in entries):
+        return
+    # Summed across every entry, the ones on your own servers included: the
+    # chain runs in sequence off a single deadline, so an entry slow for its
+    # own reasons spends the same window.
+    claimed = sum(
+        UNSET_PRE_CONNECT_TIMEOUT_MS if entry.timeout_ms is None else entry.timeout_ms
+        for entry in entries
+    )
+    if claimed <= HOSTED_SERVICE_PRE_CONNECT_ALLOWANCE_MS:
+        return
+    unset = [
+        index for index, entry in enumerate(entries) if entry.timeout_ms is None
+    ]
+    advice = (
+        f"set timeout_ms on pre-connect request"
+        f"{'s' if len(unset) > 1 else ''} {', '.join(str(i) for i in unset)}"
+        if unset
+        else "lower timeout_ms on these requests"
+    )
+    raise ConfigurationError(
+        f"pre-connect requests on the service AssemblyAI hosts for this agent may "
+        f"claim {HOSTED_SERVICE_PRE_CONNECT_ALLOWANCE_MS} ms between them; this "
+        f"declaration claims {claimed} ms. An entry that states no timeout_ms "
+        f"claims the platform's {UNSET_PRE_CONNECT_TIMEOUT_MS} ms, which is the "
+        f"likeliest way to overrun it. To fix: {advice}, or point these requests "
+        f"at your own server, which keeps the full reservation."
+    )
 
 
 def require_trunk_for_transfers(
