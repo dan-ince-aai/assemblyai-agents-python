@@ -42,8 +42,15 @@ MAX_TIMEOUT_SECONDS = 300
 # as a standalone package. The server selects a tool's backend by NAME before it
 # looks at anything else, so a customer tool under one of these names would route
 # to the platform implementation and its own body would never run.
+#
+# `aai_transfer_call` is the telephony tool the worker injects when the agent has
+# `transfer_targets`. It is listed here even though it is only injected on a
+# telephony call: the list is what the `@tool` decorator refuses, and a name that
+# collides only sometimes is worse than one that collides always, because the
+# WebSocket tests pass and the phone call is where the customer's handler goes
+# missing.
 PLATFORM_TOOL_NAMES = frozenset(
-    {"aai_credit_card_luhn_check", "aai_pre_connect_context"}
+    {"aai_credit_card_luhn_check", "aai_pre_connect_context", "aai_transfer_call"}
 )
 
 _SNAKE_CASE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")

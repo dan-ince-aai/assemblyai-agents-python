@@ -1,8 +1,13 @@
 import threading
+from pathlib import Path
 
 import pytest
-from assemblyai_agents import ConfigurationError, Tool, ToolContext, tool
-from assemblyai_agents._tool import DEFAULT_TIMEOUT_SECONDS, ToolSpec
+from assemblyai_agents import ConfigurationError, Tool, ToolContext, VoiceAgent, tool
+from assemblyai_agents._tool import (
+    DEFAULT_TIMEOUT_SECONDS,
+    PLATFORM_TOOL_NAMES,
+    ToolSpec,
+)
 from assemblyai_agents.models.rest import (
     DtmfCollectionProfile,
     ExecutionMode,
@@ -281,7 +286,8 @@ async def test_a_declared_execution_mode_is_sent():
 
 
 @pytest.mark.parametrize(
-    "name", ["aai_credit_card_luhn_check", "aai_pre_connect_context"]
+    "name",
+    ["aai_credit_card_luhn_check", "aai_pre_connect_context", "aai_transfer_call"],
 )
 async def test_a_name_that_collides_with_a_platform_tool_is_refused(name):
     # The server selects a tool's backend by NAME first, so a tool of this
@@ -299,6 +305,65 @@ async def test_a_name_that_collides_with_a_platform_tool_is_refused(name):
     message = str(exc_info.value)
     assert name in message
     assert "platform tool" in message
+
+
+async def test_the_refusal_of_a_transfer_tool_name_says_what_went_wrong():
+    # The error message is the API for anyone who hits it, and this one has to
+    # carry the whole story: the name is ours, the platform answers it, and the
+    # body below would never run. Without that, the symptom a customer sees is
+    # a handler that works on a WebSocket call and vanishes on a phone call.
+    async def aai_transfer_call(destination: str) -> dict:
+        """Hand the caller to a colleague."""
+        return {}
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        tool(aai_transfer_call)
+
+    message = str(exc_info.value)
+    assert "aai_transfer_call" in message
+    assert "platform tool" in message
+    assert "never" in message
+    assert "Rename it." in message
+
+
+def _readme() -> str:
+    path = Path(__file__).resolve().parent.parent / "README.md"
+    if not path.exists():
+        pytest.skip("README.md is not beside the package in this layout")
+    return path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("name", sorted(PLATFORM_TOOL_NAMES))
+async def test_every_reserved_name_is_named_in_the_docs(name):
+    # The drift this catches already happened once: the docs promised
+    # `transfer_call` was ours while the constant left it out, so the decorator
+    # accepted a tool the platform would then answer.
+    assert name in _readme()
+    if name == "aai_transfer_call":
+        assert name in VoiceAgent.__doc__
+
+
+@pytest.mark.parametrize("name", sorted(PLATFORM_TOOL_NAMES))
+async def test_the_docs_never_name_a_reserved_tool_without_its_prefix(name):
+    # `transfer_call` as prose for `aai_transfer_call` is the same drift in the
+    # other direction: a customer reads it, avoids the wrong name and takes the
+    # right one.
+    unprefixed = name.removeprefix("aai_")
+    for text in (_readme(), VoiceAgent.__doc__):
+        for line in text.splitlines():
+            stripped = line.replace(name, "")
+            assert unprefixed not in stripped, line.strip()
+
+
+async def test_the_old_unprefixed_transfer_name_is_still_a_customers_to_use():
+    # `transfer_call` was never reserved and the platform tool is being renamed
+    # away from it, so a customer who already ships one keeps it.
+    @tool
+    async def transfer_call(destination: str) -> dict:
+        """Hand the caller to a colleague."""
+        return {}
+
+    assert transfer_call.name == "transfer_call"
 
 
 async def test_a_tool_with_no_return_annotation_is_refused():

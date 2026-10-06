@@ -273,7 +273,10 @@ def schedule_delivery(
 
 - **Name.** The function name is the tool name the model calls; it must be
   `snake_case` and must not collide with an AssemblyAI platform tool
-  (`aai_credit_card_luhn_check`, `aai_pre_connect_context`).
+  (`aai_credit_card_luhn_check`, `aai_pre_connect_context`,
+  `aai_transfer_call`). The server picks a tool's backend by name before it
+  looks at anything else, so a tool of one of those names would be answered by
+  ours and its own body would never run.
 - **Description.** The first paragraph of the docstring is what the model reads
   to decide whether to call the tool. It is required. An `Args:` section
   provides per-parameter descriptions.
@@ -788,10 +791,11 @@ llm=LlmConfigRequest(
 If your endpoint cannot answer with a tool call at all, add
 `platform_tools_enabled=False` to the declaration. AssemblyAI then sends the
 model only the tools you defined and none of its own. Exactly one tool of ours
-is ever added — `transfer_call`, and only when you configured
+is ever added — `aai_transfer_call`, and only when you configured
 `transfer_targets` — so turning it off costs you human transfer and nothing
 else. The default is on, and a declaration that turns it off while still naming
-a platform tool in `tools` is refused.
+a platform tool in `tools` is refused. It is the only switch there is, and it is
+all-or-nothing: there is no way yet to keep one platform tool and drop another.
 
 You do not have to operate the server either. `assemblyai-agents deploy ./yourapp
 --agent AGENT_ID --type service` hosts it for you — and then the block above is
