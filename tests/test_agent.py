@@ -367,7 +367,7 @@ def test_the_greeting_window_is_sent_inside_turn_detection():
 
     assert request.input == {
         "type": "audio",
-        "turn_detection": {"uninterruptible_greeting_seconds": 2.0},
+        "turn_detection": {"greeting_uninterruptible_seconds": 2.0},
     }
 
 
@@ -384,7 +384,7 @@ def test_the_greeting_window_joins_an_endpointing_block_already_there():
     assert request.input == {
         "type": "audio",
         "keyterms": ["calzone"],
-        "turn_detection": {"min_silence": 600, "uninterruptible_greeting_seconds": 1.5},
+        "turn_detection": {"min_silence": 600, "greeting_uninterruptible_seconds": 1.5},
     }
 
 
@@ -393,7 +393,7 @@ def test_the_greeting_window_survives_the_update_request_too():
     # from the update body is a field deleted from the row.
     assert protected(2.0).to_update_request().input == {
         "type": "audio",
-        "turn_detection": {"uninterruptible_greeting_seconds": 2.0},
+        "turn_detection": {"greeting_uninterruptible_seconds": 2.0},
     }
 
 
@@ -419,7 +419,7 @@ def test_an_unset_greeting_window_is_absent_from_the_json_not_null():
 def test_a_set_greeting_window_reaches_the_serialised_payload():
     payload = _create_payload(protected(2.0))
 
-    assert payload["input"]["turn_detection"]["uninterruptible_greeting_seconds"] == 2.0
+    assert payload["input"]["turn_detection"]["greeting_uninterruptible_seconds"] == 2.0
 
 
 def test_zero_seconds_is_sent_rather_than_dropped():
@@ -427,7 +427,7 @@ def test_zero_seconds_is_sent_rather_than_dropped():
     # saying nothing: it overwrites whatever the stored row held.
     payload = _create_payload(protected(0.0))
 
-    assert payload["input"]["turn_detection"]["uninterruptible_greeting_seconds"] == 0.0
+    assert payload["input"]["turn_detection"]["greeting_uninterruptible_seconds"] == 0.0
 
 
 @pytest.mark.parametrize("seconds", [-0.5, -1.0, 30.1, 120.0])
@@ -466,10 +466,10 @@ def test_setting_the_same_key_through_extra_as_well_is_refused():
         protected(
             2.0,
             input=AudioInput(
-                extra={"turn_detection": {"uninterruptible_greeting_seconds": 9.0}}
+                extra={"turn_detection": {"greeting_uninterruptible_seconds": 9.0}}
             ),
         )
 
     message = str(exc_info.value)
-    assert "uninterruptible_greeting_seconds" in message
+    assert "greeting_uninterruptible_seconds" in message
     assert "twice" in message

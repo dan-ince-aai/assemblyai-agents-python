@@ -25,11 +25,12 @@ from .models.rest import (
 
 _REASONING_EFFORT_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 
-# `greeting_uninterruptible_seconds` is read from inside the stored input's
-# turn-detection block, under this key.
+# The field is read from inside the stored input's turn-detection block. The key
+# there is spelled exactly like the `VoiceAgent` field, so there is one name to
+# know rather than one to translate.
 TURN_DETECTION_KEY = "turn_detection"
-UNINTERRUPTIBLE_GREETING_KEY = "uninterruptible_greeting_seconds"
-MAX_UNINTERRUPTIBLE_GREETING_SECONDS = 30.0
+GREETING_UNINTERRUPTIBLE_KEY = "greeting_uninterruptible_seconds"
+MAX_GREETING_UNINTERRUPTIBLE_SECONDS = 30.0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -59,7 +60,9 @@ class VoiceAgent:
     ``greeting_uninterruptible_seconds`` is the one field that breaks that rule,
     and it sits here rather than on :class:`AudioInput` because it is a property
     of the greeting next to it. It goes out as
-    ``input.turn_detection.uninterruptible_greeting_seconds``. It is a duration
+    ``input.turn_detection.greeting_uninterruptible_seconds`` — the same name it
+    has here, so the block it lands in is the only thing to learn. It is a
+    duration
     rather than a flag because an uninterruptible turn *discards* the caller's
     speech instead of queueing it: the caller talks, is talked over, and what
     they said is never answered and never joins the conversation. A duration
@@ -173,7 +176,7 @@ class VoiceAgent:
         if emitted is None:
             emitted = AudioInput().to_dict()
         turn_detection = dict(emitted.get(TURN_DETECTION_KEY) or {})
-        turn_detection[UNINTERRUPTIBLE_GREETING_KEY] = (
+        turn_detection[GREETING_UNINTERRUPTIBLE_KEY] = (
             self.greeting_uninterruptible_seconds
         )
         return {**emitted, TURN_DETECTION_KEY: turn_detection}
@@ -218,10 +221,10 @@ def _require_usable_greeting_protection(
     """
     if seconds is None:
         return
-    if not 0.0 <= seconds <= MAX_UNINTERRUPTIBLE_GREETING_SECONDS:
+    if not 0.0 <= seconds <= MAX_GREETING_UNINTERRUPTIBLE_SECONDS:
         raise ConfigurationError(
             f"greeting_uninterruptible_seconds={seconds!r} is outside "
-            f"0.0-{MAX_UNINTERRUPTIBLE_GREETING_SECONDS}, which is the range the "
+            f"0.0-{MAX_GREETING_UNINTERRUPTIBLE_SECONDS}, which is the range the "
             f"agent row accepts, so the deploy would be rejected. The upper bound "
             f"is there because the caller's speech is discarded, not queued, for "
             f"as long as the greeting is protected. 0.0 turns it off."
@@ -234,12 +237,12 @@ def _require_usable_greeting_protection(
             "Set `greeting`, or drop this field."
         )
     extra = (audio_input.extra if audio_input is not None else None) or {}
-    collides = UNINTERRUPTIBLE_GREETING_KEY in (extra.get(TURN_DETECTION_KEY) or {})
+    collides = GREETING_UNINTERRUPTIBLE_KEY in (extra.get(TURN_DETECTION_KEY) or {})
     if collides:
         raise ConfigurationError(
             f"greeting_uninterruptible_seconds is set and "
             f"input.extra['{TURN_DETECTION_KEY}'] also sets "
-            f"`{UNINTERRUPTIBLE_GREETING_KEY}`. That is the same key written "
+            f"`{GREETING_UNINTERRUPTIBLE_KEY}`. That is the same key written "
             f"twice, and the typed field wins silently. Keep one of them."
         )
 

@@ -780,8 +780,10 @@ conversation. A duration bounds how much of a caller can be thrown away. The
 range is 0.0 to 30.0 and 0.0 is off. Leave it unset and nothing is sent.
 
 It goes out inside the input block, as
-`input.turn_detection.uninterruptible_greeting_seconds`, so setting the same
-key through `AudioInput(extra={"turn_detection": {...}})` as well is refused.
+`input.turn_detection.greeting_uninterruptible_seconds` — the same name it has
+on the agent, so the block it lands in is the only extra thing to know. Setting
+that same key through `AudioInput(extra={"turn_detection": {...}})` as well is
+refused.
 `greeting_uninterruptible_seconds` with no `greeting` is refused too — there
 would be nothing to protect.
 
