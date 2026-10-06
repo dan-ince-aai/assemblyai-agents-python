@@ -770,6 +770,7 @@ agent = VoiceAgent(
         transcription_mode="balanced",                         # or min_latency / max_accuracy
         language_codes=["en"],
         voice_focus="near-field",                              # or far-field
+        uninterruptible_turns=["greeting"],                    # see below
         extra={"turn_detection": {"min_silence": 600, "max_silence": 2500}},
     ),
     output=AudioOutput(volume=90.0),
@@ -782,10 +783,58 @@ agent = VoiceAgent(
 - Turn detection is passed through `extra`. Fields: `min_silence` (ms, default
   1000), `max_silence` (ms, default 3000), `interrupt_response` (default
   `True`), `interruption_delay`, `vad_threshold` (default 0.5).
+- `uninterruptible_turns` is the one turn-detection key with a typed field.
+  See *Turns a caller cannot cut in on* below.
 - `extra` refuses any key the class already models, so a value can never be set
   twice with one silently winning.
 - The voice is set once, at the top level (`voice="ivy"`); `AudioOutput` does
   not model it.
+
+### Turns a caller cannot cut in on
+
+A caller who starts talking over the agent cuts it off. On a noisy line that
+can happen before they have heard who they are through to, or before they have
+heard the key they were asked to press. `uninterruptible_turns` names the kinds
+of agent turn where that is not allowed to happen.
+
+```python
+input=AudioInput(uninterruptible_turns=["greeting", "dtmf_prompt"])
+```
+
+Three turn classes can be named, and an unknown name is refused rather than
+left to silently protect nothing:
+
+| Name | The turn it protects |
+|---|---|
+| `greeting` | The opening line, before the caller has said anything. |
+| `dtmf_prompt` | A line asking the caller to press a key. |
+| `tool_refused_ask` | The follow-up question after a tool declined to run. |
+
+Naming a class holds **every** turn of that class, for the whole turn. It is a
+switch, not a window — there is no duration to set, and the platform never
+grants barge-in that you turned off elsewhere, so an agent with
+`interrupt_response: false` is unaffected.
+
+**While a turn is protected the caller is not heard.** Speech arriving during
+one is discarded rather than queued: the caller talks, is talked over, and what
+they said is never answered and never joins the conversation. Protect the turns
+that have to land, not every turn.
+
+`dtmf_prompt` and `tool_refused_ask` carry one more caveat the greeting cannot
+hit, because the greeting is always first. A protected turn waiting behind
+another one still plays once a barge-in cuts the turn in front of it, so the
+caller hears a fragment and then the protected line.
+
+**Two kinds of turn cannot be named at all.** A completion from your own model
+(see *Bring your own LLM*) is indistinguishable from any other model reply by
+the time it reaches the platform, so no setting here can single it out — if you
+have a line that must be said without interruption, make it the `greeting`.
+The ordinary reply to a caller's turn *is* distinguishable, but is not offered,
+because there is no way to say which replies to protect: naming the class would
+hold every reply in the call.
+
+Unset sends nothing. `[]` is a real statement — "protect nothing" — and is
+sent, because an update replaces the stored agent rather than merging into it.
 
 ## Bring your own LLM
 
@@ -827,6 +876,12 @@ is ever added — `aai_transfer_call`, and only when you configured
 else. The default is on, and a declaration that turns it off while still naming
 a platform tool in `tools` is refused. It is the only switch there is, and it is
 all-or-nothing: there is no way yet to keep one platform tool and drop another.
+
+**A line your model returns cannot be protected from a barge-in.** By the time
+your completion reaches the platform it is indistinguishable from any other
+model reply, so `uninterruptible_turns` has no name for it. If you have wording
+that must be heard in full — a disclosure, a recorded-line notice — put it in
+the agent's `greeting` and protect that. See *Turns a caller cannot cut in on*.
 
 You do not have to operate the server either. `assemblyai-agents deploy ./yourapp
 --agent AGENT_ID --type service` hosts it for you — and then the block above is

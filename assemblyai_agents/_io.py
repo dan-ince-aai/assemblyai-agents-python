@@ -7,6 +7,14 @@ ENCODINGS = ("audio/pcm", "audio/pcmu", "audio/pcma")
 TRANSCRIPTION_MODES = ("balanced", "min_latency", "max_accuracy")
 VOICE_FOCUS = ("near-field", "far-field")
 
+# The agent turn classes a caller may not barge in on. These are the platform's
+# own names for the turns, not a vocabulary invented here, and the set is closed
+# — anything else is refused rather than left silently unprotected.
+UNINTERRUPTIBLE_TURNS = ("greeting", "dtmf_prompt", "tool_refused_ask")
+
+TURN_DETECTION_KEY = "turn_detection"
+UNINTERRUPTIBLE_TURNS_KEY = "uninterruptible_turns"
+
 MAX_KEYTERMS = 100
 MAX_TRANSCRIPTION_PROMPT = 1750
 
@@ -71,6 +79,37 @@ class AudioInput:
     ``extra`` is merged into the emitted dict and refuses any key this class
     already models, so it can only add what is missing rather than quietly
     contradict a typed field.
+
+    **One turn-detection key is modelled: ``uninterruptible_turns``.** It names
+    the agent turns a caller may not cut in on, by turn class::
+
+        AudioInput(uninterruptible_turns=["greeting"])
+
+    Protection is a property of a turn, not a window on one: naming a class
+    holds every turn of that class for its whole length. The names are a closed
+    set — ``greeting``, ``dtmf_prompt`` and ``tool_refused_ask`` — so a typo is
+    refused here rather than leaving a turn silently unprotected. The key is
+    emitted inside the ``turn_detection`` block, where the server reads it, and
+    joins whatever ``extra`` already puts there. ``[]`` is a real statement
+    ("protect nothing") and is sent; unset sends nothing at all.
+
+    **Two kinds of turn cannot be named, by construction.** A completion from
+    your own model (``llm=``) is indistinguishable from any other model reply by
+    the time it reaches the platform, so no static configuration can single it
+    out — if you need a line said without interruption, put it in the
+    ``greeting``. The ordinary reply to a caller's turn *is* distinguishable,
+    but is not offered, because there is no way to say which replies to protect:
+    naming the class would hold every reply in the call.
+
+    **While a turn is protected the caller is not heard.** Speech arriving
+    during one is discarded rather than queued, so the caller talks, is talked
+    over, and what they said is never answered and never joins the
+    conversation. Protect the turns that must land, not every turn.
+
+    ``dtmf_prompt`` and ``tool_refused_ask`` carry one more caveat the greeting
+    cannot hit: a protected turn waiting behind another one still plays after a
+    barge-in cuts the turn in front of it, so the caller hears a fragment and
+    then the protected line.
     """
 
     format: Optional[AudioFormat] = None
@@ -81,6 +120,7 @@ class AudioInput:
     language_codes: Optional[list[str]] = None
     voice_focus: Optional[VoiceFocus] = None
     voice_focus_threshold: Optional[float] = None
+    uninterruptible_turns: Optional[list[str]] = None
     extra: Optional[dict[str, Any]] = None
 
     def __post_init__(self) -> None:
@@ -105,6 +145,8 @@ class AudioInput:
             "input.voice_focus_threshold", self.voice_focus_threshold, 0.0, 1.0
         )
         _reject_modelled_keys(self, self.extra)
+        _reject_unknown_turns(self.uninterruptible_turns)
+        _reject_turn_detection_collision(self.uninterruptible_turns, self.extra)
 
     def to_dict(self) -> dict[str, Any]:
         emitted: dict[str, Any] = {"type": "audio"}
@@ -123,6 +165,13 @@ class AudioInput:
             if value is not None:
                 emitted[name] = value
         emitted.update(self.extra or {})
+        if self.uninterruptible_turns is not None:
+            # Nested rather than top level, because that is where the server
+            # reads it. Added after `extra` so it joins an endpointing block
+            # already there rather than replacing it.
+            turn_detection = dict(emitted.get(TURN_DETECTION_KEY) or {})
+            turn_detection[UNINTERRUPTIBLE_TURNS_KEY] = list(self.uninterruptible_turns)
+            emitted[TURN_DETECTION_KEY] = turn_detection
         return emitted
 
 
@@ -157,6 +206,43 @@ class AudioOutput:
             emitted["volume"] = self.volume
         emitted.update(self.extra or {})
         return emitted
+
+
+def _nested_turn_detection(extra: Optional[dict]) -> dict:
+    nested = (extra or {}).get(TURN_DETECTION_KEY)
+    return nested if isinstance(nested, dict) else {}
+
+
+def _reject_unknown_turns(turns: Optional[list]) -> None:
+    if turns is None:
+        return
+    listed = ", ".join(f"`{name}`" for name in UNINTERRUPTIBLE_TURNS)
+    if isinstance(turns, str) or not isinstance(turns, (list, tuple)):
+        raise ConfigurationError(
+            f"input.uninterruptible_turns={turns!r} is not a list. It names the "
+            f"turn classes a caller may not cut in on, drawn from {listed}."
+        )
+    unknown = [name for name in turns if name not in UNINTERRUPTIBLE_TURNS]
+    if not unknown:
+        return
+    named = ", ".join(repr(name) for name in unknown)
+    raise ConfigurationError(
+        f"input.uninterruptible_turns names {named}, which the API does not "
+        f"know. The turn classes are {listed}. An unknown name is refused here "
+        f"because the alternative is a turn that is silently never protected."
+    )
+
+
+def _reject_turn_detection_collision(
+    turns: Optional[list], extra: Optional[dict]
+) -> None:
+    if turns is None or UNINTERRUPTIBLE_TURNS_KEY not in _nested_turn_detection(extra):
+        return
+    raise ConfigurationError(
+        f"input.uninterruptible_turns is set and input.extra[{TURN_DETECTION_KEY!r}] "
+        f"sets `{UNINTERRUPTIBLE_TURNS_KEY}` as well. That is one key written "
+        f"twice, and the typed field wins silently. Keep one of them."
+    )
 
 
 def _reject_outside(field: str, value: Optional[str], allowed: tuple) -> None:
