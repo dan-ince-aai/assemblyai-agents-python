@@ -156,6 +156,105 @@ def test_a_sample_rate_other_than_24000_is_refused():
     assert "24000" in str(exc_info.value)
 
 
+def test_an_unset_uninterruptible_turns_adds_nothing_to_the_input():
+    # The field has to cost nothing when it is not used: an input that never
+    # mentions it must emit exactly the bytes it emitted before the field
+    # existed, with no empty `turn_detection` block appearing.
+    assert AudioInput().to_dict() == {"type": "audio"}
+    assert AudioInput(keyterms=["calzone"]).to_dict() == {
+        "type": "audio",
+        "keyterms": ["calzone"],
+    }
+
+
+def test_uninterruptible_turns_is_emitted_inside_turn_detection():
+    # Nested, because that is where the server reads it — not as a top-level
+    # input key, which would be dropped without a word.
+    assert AudioInput(uninterruptible_turns=["greeting"]).to_dict() == {
+        "type": "audio",
+        "turn_detection": {"uninterruptible_turns": ["greeting"]},
+    }
+
+
+def test_uninterruptible_turns_joins_an_endpointing_block_already_there():
+    # `extra` is how the rest of turn detection is configured, so the typed
+    # field has to add to that block rather than replace it.
+    audio_input = AudioInput(
+        keyterms=["calzone"],
+        uninterruptible_turns=["greeting", "dtmf_prompt"],
+        extra={"turn_detection": {"min_silence": 600}},
+    )
+
+    assert audio_input.to_dict() == {
+        "type": "audio",
+        "keyterms": ["calzone"],
+        "turn_detection": {
+            "min_silence": 600,
+            "uninterruptible_turns": ["greeting", "dtmf_prompt"],
+        },
+    }
+
+
+def test_an_empty_turn_list_is_sent_rather_than_dropped():
+    # "Protect nothing" is a different statement from saying nothing: an update
+    # replaces the stored row rather than merging into it, so an omitted key
+    # leaves whatever was there before in place.
+    assert AudioInput(uninterruptible_turns=[]).to_dict() == {
+        "type": "audio",
+        "turn_detection": {"uninterruptible_turns": []},
+    }
+
+
+@pytest.mark.parametrize(
+    "turns",
+    [["greeting"], ["dtmf_prompt"], ["tool_refused_ask"], ["greeting", "dtmf_prompt"]],
+)
+def test_every_turn_class_the_platform_knows_is_accepted(turns):
+    assert AudioInput(uninterruptible_turns=turns).to_dict()["turn_detection"] == {
+        "uninterruptible_turns": turns
+    }
+
+
+def test_an_unknown_turn_name_is_refused_and_the_error_lists_the_real_ones():
+    # A typo must fail here. The only other outcome is a turn the customer
+    # believes is protected and never is.
+    with pytest.raises(ConfigurationError) as exc_info:
+        AudioInput(uninterruptible_turns=["greting"])
+
+    message = str(exc_info.value)
+    assert "greting" in message
+    assert "`greeting`" in message
+    assert "`dtmf_prompt`" in message
+    assert "`tool_refused_ask`" in message
+
+
+def test_a_bare_string_of_turns_is_refused_rather_than_read_letter_by_letter():
+    with pytest.raises(ConfigurationError) as exc_info:
+        AudioInput(uninterruptible_turns="greeting")
+
+    assert "not a list" in str(exc_info.value)
+
+
+def test_setting_the_turn_list_through_extra_as_well_is_refused():
+    with pytest.raises(ConfigurationError) as exc_info:
+        AudioInput(
+            uninterruptible_turns=["greeting"],
+            extra={"turn_detection": {"uninterruptible_turns": ["dtmf_prompt"]}},
+        )
+
+    assert "twice" in str(exc_info.value)
+
+
+def test_the_turn_list_through_extra_alone_still_works():
+    # The escape hatch is not closed off — only the double write is refused.
+    assert AudioInput(
+        extra={"turn_detection": {"uninterruptible_turns": ["greeting"]}}
+    ).to_dict() == {
+        "type": "audio",
+        "turn_detection": {"uninterruptible_turns": ["greeting"]},
+    }
+
+
 def test_the_helpers_are_frozen():
     audio_input = AudioInput()
 

@@ -336,3 +336,65 @@ def test_turning_platform_tools_off_reaches_the_wire_model():
 
     assert agent.to_request().platform_tools_enabled is False
     assert agent.to_update_request().platform_tools_enabled is False
+
+
+PROTECTED_BLOCK = {
+    "type": "audio",
+    "turn_detection": {"uninterruptible_turns": ["greeting"]},
+}
+
+
+def protecting(turns):
+    return VoiceAgent(
+        name="Pizza Line",
+        voice="ivy",
+        system_prompt=PROMPT,
+        greeting="Pizza Palace — what can I get you?",
+        input=AudioInput(uninterruptible_turns=turns),
+    )
+
+
+def test_a_protected_turn_reaches_both_the_create_and_the_update_request():
+    # An update replaces the stored agent rather than merging into it, so a
+    # block missing from the update body is a block deleted from the row.
+    agent = protecting(["greeting"])
+
+    assert agent.to_request().input == PROTECTED_BLOCK
+    assert agent.to_update_request().input == PROTECTED_BLOCK
+
+
+def test_a_protected_turn_reaches_the_serialised_payload():
+    payload = _create_payload(protecting(["greeting", "tool_refused_ask"]))
+
+    assert payload["input"]["turn_detection"]["uninterruptible_turns"] == [
+        "greeting",
+        "tool_refused_ask",
+    ]
+
+
+def test_an_agent_that_protects_no_turn_sends_no_input_block_at_all():
+    # Requests are dumped with exclude_none, which is what makes this field free
+    # for anyone pointed at a server that has never heard of it.
+    payload = _create_payload(
+        VoiceAgent(name="Pizza Line", voice="ivy", system_prompt=PROMPT)
+    )
+
+    assert "input" not in payload
+
+
+def test_protecting_a_turn_does_not_require_a_greeting():
+    # The guard that used to refuse this is gone with the greeting framing. Two
+    # of the three turn classes have nothing to do with a greeting, so the lack
+    # of one says nothing about whether the setting is meaningful.
+    agent = VoiceAgent(
+        name="Pizza Line",
+        voice="ivy",
+        system_prompt=PROMPT,
+        input=AudioInput(uninterruptible_turns=["dtmf_prompt"]),
+    )
+
+    assert agent.to_request().input == {
+        "type": "audio",
+        "turn_detection": {"uninterruptible_turns": ["dtmf_prompt"]},
+    }
+    assert agent.greeting is None
