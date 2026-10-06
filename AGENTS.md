@@ -53,3 +53,27 @@ you change something an example depends on, open a pull request there too.
 
 `pyproject.toml` holds the version; tag it to match. Consumers install from a
 git URL, so a tag is the only stable reference they have.
+
+**A tag that introduces a new wire field waits until that field is deployed,
+not until it is merged.** Those are different states, and the gap between them
+is real: the field that prompted this rule merged to the platform's master and
+was never deployed at all.
+
+Shipping into that gap fails silently rather than loudly. The config structs on
+the other side do not forbid unknown keys, and validation only reads keys it
+knows, so a field the deployed server has not got is accepted and ignored. No
+error reaches anyone. A setting that does nothing is indistinguishable from a
+setting that works, which is the worst way for this to go wrong and the reason
+the rule is written down rather than assumed.
+
+Nothing here enforces it. CI runs the tests and an install check; there is no
+release workflow, no tag trigger and no version gate, so the person tagging is
+the check. The package has no capability negotiation with the API either, so it
+cannot ask what the server supports and refuse.
+
+What it can do is make the mismatch visible afterwards. Every field on the
+session-config models in `models/` is echoed back in `session.ready`, so a
+caller who compares what they set against what comes back can see a server that
+dropped it. That only works while those models carry the field — so regenerate
+`models/` for a new wire field in the same change that adds the field, not
+later.
