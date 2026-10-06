@@ -336,7 +336,32 @@ def test_a_service_deploy_asks_for_the_service_kind(make_client, recorder):
     assert errs == ""
 
 
-def test_a_service_deploy_prints_the_address_it_answers_on(make_client, recorder):
+def test_a_service_deploy_never_prints_the_address_it_answers_on(
+    make_client, recorder
+):
+    # The address names this deployment and dies with the next one, and the API
+    # refuses it on an agent, so there is nothing a customer can do with it
+    # except the thing that breaks. Everything that calls the service resolves
+    # the address per call from the agent ID.
+    _, out, errs, _ = _run_deploy(
+        make_client,
+        recorder,
+        [
+            _created(deployment_type="service"),
+            _polled("ready", deployment_type="service", service_url=SERVICE_URL),
+        ],
+        deployment_type="service",
+    )
+
+    assert SERVICE_URL not in out
+    assert SERVICE_URL not in errs
+    assert "modal.run" not in out
+    assert "AssemblyAI is now running the tools" not in out
+
+
+def test_a_service_deploy_names_the_deployment_it_made(make_client, recorder):
+    # The deployment ID is the fact that replaces the address: it is what
+    # `deployments status` and a support ticket are keyed on.
     _, out, _, _ = _run_deploy(
         make_client,
         recorder,
@@ -347,11 +372,7 @@ def test_a_service_deploy_prints_the_address_it_answers_on(make_client, recorder
         deployment_type="service",
     )
 
-    # The address is still worth printing: a tool declared with a full address
-    # is the one thing that has to be written against it.
-    assert SERVICE_URL in out
-    assert f"{SERVICE_URL}/tools/" in out
-    assert "AssemblyAI is now running the tools" not in out
+    assert f"as deployment {DEPLOYMENT_ID}" in out
 
 
 def test_a_service_deploy_does_not_tell_the_customer_to_set_the_address(
@@ -381,12 +402,11 @@ def test_a_service_deploy_does_not_tell_the_customer_to_set_the_address(
     assert "stable" not in out
 
 
-def test_a_service_deploy_says_a_tool_with_an_address_is_the_exception(
-    make_client, recorder
-):
-    # A tool's URL is sent as stored, not resolved from the deployment, so a
-    # tool pointing at this service does need re-declaring after every deploy.
-    # That is the part the old advice left out entirely.
+def test_a_service_deploy_gives_the_path_form_for_a_tool(make_client, recorder):
+    # The old advice was to re-declare every tool against the deployment's own
+    # address and write it to the agent after each deploy. The API now refuses
+    # exactly that write, so the only form worth printing is the path, which is
+    # resolved per call and written to the agent once.
     _, out, _, _ = _run_deploy(
         make_client,
         recorder,
@@ -397,16 +417,19 @@ def test_a_service_deploy_says_a_tool_with_an_address_is_the_exception(
         deployment_type="service",
     )
 
-    assert "Tools are not resolved that way" in out
-    assert "re-declared" in out
-    assert "after every deploy" in out
-    assert f'hosted_at("{SERVICE_URL}/tools/"' in out
+    assert 't.hosted_at("/tools/" + t.name)' in out
+    assert '"/pre-connect/lookup"' in out
+    assert "the path alone" in out
+    # The two instructions the refused advice turned on.
+    assert "re-declared" not in out
+    assert "after every deploy" not in out
 
 
-def test_a_ready_service_with_no_address_says_so_rather_than_printing_a_blank(
-    make_client, recorder
-):
-    code, out, errs, _ = _run_deploy(
+def test_a_ready_service_with_no_address_says_what_that_costs(make_client, recorder):
+    # Nothing is printed for the customer to copy either way, but a ready
+    # service the server gave no address for is one a session cannot resolve,
+    # so it is still worth saying — keyed on the deployment, not the address.
+    code, _, errs, _ = _run_deploy(
         make_client,
         recorder,
         [
@@ -417,10 +440,12 @@ def test_a_ready_service_with_no_address_says_so_rather_than_printing_a_blank(
     )
 
     assert code == 0
-    assert "reported no " in errs
-    assert "https://" not in out
-    # The pointer names the real deployment, so it can be pasted as it is.
-    assert f"deployments status {DEPLOYMENT_ID}" in errs
+    assert "reported no address" in errs
+    assert "nothing to resolve to" in errs
+    assert DEPLOYMENT_ID in errs
+    # It no longer sends them to `deployments status` to read an address that
+    # command no longer prints.
+    assert "deployments status" not in errs
 
 
 def test_a_status_newer_than_this_package_stops_waiting_without_a_traceback(
@@ -821,7 +846,10 @@ def test_status_prints_the_detail_in_full(make_client, recorder):
     assert TRACEBACK in out
 
 
-def test_status_prints_the_kind_and_a_service_address(make_client, recorder):
+def test_status_prints_the_kind_and_never_the_address(make_client, recorder):
+    # `deployments status` used to be where a customer was sent to read the
+    # address. It names the deployment and what it is doing; the address stays
+    # on the typed model for support, off the command line.
     _, out, _ = _run_status(
         make_client,
         recorder,
@@ -829,7 +857,9 @@ def test_status_prints_the_kind_and_a_service_address(make_client, recorder):
     )
 
     assert "service" in out
-    assert SERVICE_URL in out
+    assert SERVICE_URL not in out
+    assert "modal.run" not in out
+    assert "address" not in out
 
 
 def test_status_reads_an_older_row_with_no_kind_as_tools(make_client, recorder):

@@ -27,7 +27,13 @@ answers the requests the platform sends. That is the whole remit.
   the caller passes to `hosted_at`, and the package does not care what put the
   value there — a tunnel today, a deployment later. The ngrok helper is a script
   in the examples repository and is deleted when agent code can be deployed
-  directly.
+  directly. The one shape it does recognise is the address AssemblyAI mints for
+  a hosted service (`_urls.py`), and only to refuse it: the API refuses that
+  write too, so this is the rule above, not an exception to this one.
+- **A deployment's own address is never shown to a customer.** It names one
+  deployment and dies with the next, nothing an agent stores may carry it, and
+  every caller resolves it per call from the agent ID. So no command prints it
+  and no docstring teaches it; the path form is what goes on the agent.
 - **`assemblyai_agents/models/` is generated, not written.** `rest.py` and
   `ws.py` come out of datamodel-codegen against the API's OpenAPI document, so
   a new wire field arrives by regenerating them from the current spec rather

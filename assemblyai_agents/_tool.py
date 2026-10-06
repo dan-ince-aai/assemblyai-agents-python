@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from ._context import ToolContext
 from ._exceptions import ConfigurationError
 from ._schema import _render, derive_schema
+from ._urls import check_called_address
 from .models.rest import (
     DtmfCollectionProfile,
     ExecutionMode,
@@ -156,11 +157,27 @@ class Tool:
         http_method: Any = None,
         headers: Optional[list] = None,
     ) -> "Tool":
-        """The same tool, pointed at an address the platform can reach.
+        """The same tool, pointed at where the platform should call it.
 
-        A tunnel's address does not exist when the module is imported, so an
-        `http=` passed to `@tool` cannot carry one. Build the declaration in a
-        function that takes the address and bind the tools there:
+        Two addresses are accepted, and which one is right depends on who runs
+        the endpoint.
+
+        **A path, for a tool the service AssemblyAI hosts answers.** Write the
+        route alone and AssemblyAI resolves it per call, against whichever
+        deployment of that agent's service is live when the call arrives:
+
+            tools = [declared.hosted_at(f"/tools/{declared.name}")
+                     for declared in TOOLS]
+
+        That is written to the agent once and survives every deploy. An absolute
+        address read off a deployment is the opposite: it names that deployment,
+        dies with it, and the API refuses it.
+
+        **An absolute URL, for an endpoint you operate.** Your own API, or a
+        tunnel during development. A tunnel's address does not exist when the
+        module is imported, which is when `@tool` runs, so an `http=` passed to
+        the decorator cannot carry one; build the declaration in a function that
+        takes the address and bind the tools there:
 
             tools = [declared.hosted_at(f"{base_url}/tools/{declared.name}",
                                         headers=[auth]) for declared in TOOLS]
@@ -169,11 +186,7 @@ class Tool:
         level list stays importable by tests and one address cannot leak into
         another declaration.
         """
-        if not url.startswith("https://") and not url.startswith("http://"):
-            raise ConfigurationError(
-                f"tool `{self.name}`: `{url}` is not an http(s) URL. The platform "
-                f"fetches this address itself, so it has to be one it can reach."
-            )
+        check_called_address(url, subject=f"tool `{self.name}`: ")
         return Tool(
             dataclasses.replace(
                 self._spec,
@@ -242,6 +255,11 @@ def _declare(
     _reject_bad_name(name)
     _reject_unusable_timeout(name, timeout_seconds)
     _reject_hold(name, execution_mode)
+    # `http=` and `hosted_at` store the same field, so they answer to the same
+    # rule. A deployment address pasted into the decorator is the likelier of
+    # the two mistakes, because it reads like a constant.
+    if http is not None and http.url:
+        check_called_address(http.url, subject=f"tool `{name}`: ")
     hints = _hints(name, target)
     _reject_unusable_return(name, hints)
     description, descriptions = parse_docstring(inspect.getdoc(target))

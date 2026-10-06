@@ -193,6 +193,63 @@ def test_a_url_that_is_not_https_is_refused():
     assert "https" in str(exc_info.value)
 
 
+def test_a_pre_connect_request_takes_a_path_on_the_hosted_service():
+    # Resolved per call against whichever deployment of this agent's service is
+    # live, so it is written to the agent once and survives every deploy.
+    entry = PreConnectRequest(url="/pre-connect/whois", timeout_ms=400)
+
+    assert entry.to_request().http.url == "/pre-connect/whois"
+
+
+def test_a_pre_connect_request_refuses_a_deployments_own_address():
+    address = (
+        "https://acme-prod--svc-6f1a2c9d4e8b70315a2d6c8f4b9e10a3.modal.run"
+        "/pre-connect/whois"
+    )
+    with pytest.raises(ConfigurationError) as exc_info:
+        PreConnectRequest(url=address, timeout_ms=400)
+
+    message = str(exc_info.value)
+    assert "one deployment" in message
+    assert "`/pre-connect/whois`" in message
+
+
+def test_a_chain_on_the_hosted_service_needs_its_timeouts_stated():
+    # An entry that states none claims the platform's 10s, which alone overruns
+    # the window a hosted service leaves the chain. Switching to the path form
+    # without this is one 422 traded for another.
+    with pytest.raises(ConfigurationError) as exc_info:
+        agent(pre_connect=[PreConnectRequest(url="/pre-connect/whois")])
+
+    message = str(exc_info.value)
+    assert "may claim 5000 ms" in message
+    assert "set timeout_ms on pre-connect request 0" in message
+
+
+def test_a_stated_timeout_clears_the_hosted_service_budget():
+    built = agent(
+        pre_connect=[
+            PreConnectRequest(url="/pre-connect/whois", timeout_ms=400),
+            PreConnectRequest(url="https://example.com/tier", timeout_ms=400),
+        ]
+    )
+
+    assert built.to_request().pre_connect_requests[0].http.url == "/pre-connect/whois"
+
+
+def test_a_chain_of_your_own_servers_keeps_the_whole_reservation():
+    # Nothing has to start before those entries run, so the budget does not
+    # apply and an unstated timeout stays legal.
+    built = agent(
+        pre_connect=[
+            PreConnectRequest(url="https://example.com/whois"),
+            PreConnectRequest(url="https://example.com/tier"),
+        ]
+    )
+
+    assert len(built.to_request().pre_connect_requests) == 2
+
+
 @pytest.mark.parametrize("timeout", [0, 801])
 def test_a_pre_connect_timeout_outside_the_range_is_refused(timeout):
     with pytest.raises(ConfigurationError) as exc_info:
