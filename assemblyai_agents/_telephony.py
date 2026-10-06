@@ -54,6 +54,11 @@ class HumanTransfer:
     Transfer targets are **telephony-only**. A WebSocket session ignores them
     outright, so declaring one changes nothing about a WebSocket call.
 
+    Declaring any target is what puts the ``aai_transfer_call`` platform tool in
+    front of the model; that name is reserved, so a tool of your own cannot take
+    it. ``platform_tools_enabled=False`` removes it and with it every transfer
+    here.
+
     A human target **requires the agent's ``outbound_trunk_id``**, which is
     checked when the agent is built. That trunk affects human transfers *only*,
     despite its own field description on the REST API: an outbound call placed

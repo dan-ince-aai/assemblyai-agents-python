@@ -53,10 +53,13 @@ class VoiceAgent:
     ``platform_tools_enabled`` is ``True`` by default, which is AssemblyAI's own
     default too. Set it ``False`` when your model endpoint cannot return tool
     calls: nothing of ours is then added to the tool list the model sees. Only
-    one tool is ever added at you — ``transfer_call``, and only when
+    one tool is ever added at you — ``aai_transfer_call``, and only when
     ``transfer_targets`` is configured — so turning this off costs you human
     transfer and nothing else. The server refuses a declaration that turns it
     off and still names a platform tool in ``tools``.
+
+    It is the only switch, and it is all-or-nothing: there is no way yet to keep
+    one platform tool and drop another.
 
     ``transfer_targets``, ``pre_connect``, ``outbound_trunk_id`` and
     ``caller_id`` are telephony fields and inert on a WebSocket session. Every
