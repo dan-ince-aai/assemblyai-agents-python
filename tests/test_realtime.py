@@ -793,3 +793,44 @@ async def test_an_sdk_without_reply_error_skips_it_and_carries_on(monkeypatch):
     assert isinstance(received[0], UnknownEvent)
     assert received[0].type == "reply.error"
     assert isinstance(received[1], ReplyDone)
+
+
+def test_uninterruptible_turns_survives_the_session_config_read_back():
+    # `SessionReady.config.input.turn_detection` is a generated pydantic model
+    # with the default `extra='ignore'`, so a field missing from it is dropped
+    # on the way in WITHOUT an error — the setting would look applied on the way
+    # out and be invisible on the way back.
+    ready = SessionReady.model_validate(
+        {
+            "type": "session.ready",
+            "session_id": "sess-1",
+            "expires_at": 9999,
+            "config": {
+                "input": {
+                    "type": "audio",
+                    "turn_detection": {
+                        "min_silence": 600,
+                        "uninterruptible_turns": ["greeting", "dtmf_prompt"],
+                    },
+                }
+            },
+        }
+    )
+
+    assert ready.config.input.turn_detection.uninterruptible_turns == [
+        "greeting",
+        "dtmf_prompt",
+    ]
+
+
+def test_a_server_that_never_mentions_the_turn_list_reads_back_as_empty():
+    ready = SessionReady.model_validate(
+        {
+            "type": "session.ready",
+            "session_id": "sess-1",
+            "expires_at": 9999,
+            "config": {"input": {"type": "audio", "turn_detection": {}}},
+        }
+    )
+
+    assert ready.config.input.turn_detection.uninterruptible_turns == []

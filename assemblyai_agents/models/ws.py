@@ -372,6 +372,7 @@ class TurnDetectionConfig(BaseModel):
     max_silence: int | None = 3000
     min_silence: int | None = 1000
     type: Type29 | None = None
+    uninterruptible_turns: list[str] | None = []
     vad_threshold: float | None = 0.5
 
 
