@@ -1,7 +1,7 @@
 import re
 import textwrap
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from ._exceptions import ConfigurationError
 from ._io import AudioInput, AudioOutput
@@ -24,6 +24,12 @@ from .models.rest import (
 )
 
 _REASONING_EFFORT_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+
+# `greeting_uninterruptible_seconds` is read from inside the stored input's
+# turn-detection block, under this key.
+TURN_DETECTION_KEY = "turn_detection"
+UNINTERRUPTIBLE_GREETING_KEY = "uninterruptible_greeting_seconds"
+MAX_UNINTERRUPTIBLE_GREETING_SECONDS = 30.0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -50,6 +56,15 @@ class VoiceAgent:
     a shortcut that relocates a field is the second vocabulary this builder
     exists to remove — write ``input=AudioInput(keyterms=[...])``.
 
+    ``greeting_uninterruptible_seconds`` is the one field that breaks that rule,
+    and it sits here rather than on :class:`AudioInput` because it is a property
+    of the greeting next to it. It goes out as
+    ``input.turn_detection.uninterruptible_greeting_seconds``. It is a duration
+    rather than a flag because an uninterruptible turn *discards* the caller's
+    speech instead of queueing it: the caller talks, is talked over, and what
+    they said is never answered and never joins the conversation. A duration
+    bounds how long that can happen. ``None`` sends nothing and 0.0 is off.
+
     ``platform_tools_enabled`` is ``True`` by default, which is AssemblyAI's own
     default too. Set it ``False`` when your model endpoint cannot return tool
     calls: nothing of ours is then added to the tool list the model sees. Only
@@ -71,6 +86,7 @@ class VoiceAgent:
     system_prompt: str
     voice: str
     greeting: Optional[str] = None
+    greeting_uninterruptible_seconds: Optional[float] = None
     llm: Optional[LlmConfigRequest] = None
     input: Optional[AudioInput] = None
     output: Optional[AudioOutput] = None
@@ -98,6 +114,9 @@ class VoiceAgent:
         _require_unique_tool_names(self.tools)
         _require_base_url_with_key(self.llm)
         _require_reasoning_effort_format(self.llm)
+        _require_usable_greeting_protection(
+            self.greeting_uninterruptible_seconds, self.greeting, self.input
+        )
         validate_pre_connect(self.pre_connect)
         require_trunk_for_transfers(self.transfer_targets, self.outbound_trunk_id)
         if self.caller_id is not None:
@@ -109,7 +128,7 @@ class VoiceAgent:
             system_prompt=self.system_prompt,
             greeting=self.greeting,
             voice=VoiceConfig(voice_id=self.voice),
-            input=self.input.to_dict() if self.input is not None else None,
+            input=self.input_config(),
             output=self.output.to_dict() if self.output is not None else None,
             tools=self.tool_definitions(),
             pre_connect_requests=self.pre_connect_requests(),
@@ -140,6 +159,25 @@ class VoiceAgent:
             fields["llm"] = [self.llm.model_copy(update={"reasoning_effort": ""})]
         return AgentUpdateRequest(**fields)
 
+    def input_config(self) -> Optional[dict[str, Any]]:
+        """The ``input`` block as the wire carries it.
+
+        ``greeting_uninterruptible_seconds`` is folded in here, because the
+        server reads it from the turn-detection block rather than from a
+        top-level field. An agent that sets it without an ``input`` still gets
+        one, since there is nowhere else for the key to go.
+        """
+        emitted = self.input.to_dict() if self.input is not None else None
+        if self.greeting_uninterruptible_seconds is None:
+            return emitted
+        if emitted is None:
+            emitted = AudioInput().to_dict()
+        turn_detection = dict(emitted.get(TURN_DETECTION_KEY) or {})
+        turn_detection[UNINTERRUPTIBLE_GREETING_KEY] = (
+            self.greeting_uninterruptible_seconds
+        )
+        return {**emitted, TURN_DETECTION_KEY: turn_detection}
+
     def tool_definitions(self) -> Optional[list[PlaintextToolDefinition]]:
         if self.tools is None:
             return None
@@ -164,6 +202,45 @@ class VoiceAgent:
         """
         return tuple(
             declared.name for declared in self.tools or () if declared.spec.http is None
+        )
+
+
+def _require_usable_greeting_protection(
+    seconds: Optional[float],
+    greeting: Optional[str],
+    audio_input: Optional[AudioInput],
+) -> None:
+    """Three rules, all decidable here, none worth a round trip to learn.
+
+    The range mirrors the server's own bound. The other two catch a value that
+    would be accepted and then do nothing: a protected greeting that is never
+    spoken, and a second spelling of the same key under ``extra``.
+    """
+    if seconds is None:
+        return
+    if not 0.0 <= seconds <= MAX_UNINTERRUPTIBLE_GREETING_SECONDS:
+        raise ConfigurationError(
+            f"greeting_uninterruptible_seconds={seconds!r} is outside "
+            f"0.0-{MAX_UNINTERRUPTIBLE_GREETING_SECONDS}, which is the range the "
+            f"agent row accepts, so the deploy would be rejected. The upper bound "
+            f"is there because the caller's speech is discarded, not queued, for "
+            f"as long as the greeting is protected. 0.0 turns it off."
+        )
+    if greeting is None:
+        raise ConfigurationError(
+            "greeting_uninterruptible_seconds is set but `greeting` is not. The "
+            "window protects the greeting, so with no greeting to speak there is "
+            "nothing to protect and the setting would be accepted and ignored. "
+            "Set `greeting`, or drop this field."
+        )
+    extra = (audio_input.extra if audio_input is not None else None) or {}
+    collides = UNINTERRUPTIBLE_GREETING_KEY in (extra.get(TURN_DETECTION_KEY) or {})
+    if collides:
+        raise ConfigurationError(
+            f"greeting_uninterruptible_seconds is set and "
+            f"input.extra['{TURN_DETECTION_KEY}'] also sets "
+            f"`{UNINTERRUPTIBLE_GREETING_KEY}`. That is the same key written "
+            f"twice, and the typed field wins silently. Keep one of them."
         )
 
 

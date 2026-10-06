@@ -71,6 +71,10 @@ class AudioInput:
     ``extra`` is merged into the emitted dict and refuses any key this class
     already models, so it can only add what is missing rather than quietly
     contradict a typed field.
+
+    One turn-detection key does have a typed field, on ``VoiceAgent`` rather
+    than here: ``greeting_uninterruptible_seconds`` is folded into this block
+    when the request is built. Setting it in ``extra`` as well is refused there.
     """
 
     format: Optional[AudioFormat] = None

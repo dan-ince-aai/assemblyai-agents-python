@@ -336,3 +336,140 @@ def test_turning_platform_tools_off_reaches_the_wire_model():
 
     assert agent.to_request().platform_tools_enabled is False
     assert agent.to_update_request().platform_tools_enabled is False
+
+
+GREETING = "Pizza Palace — what can I get you?"
+
+
+def protected(seconds, **kwargs):
+    return VoiceAgent(
+        name="Pizza Line",
+        voice="ivy",
+        system_prompt=PROMPT,
+        greeting=GREETING,
+        greeting_uninterruptible_seconds=seconds,
+        **kwargs,
+    )
+
+
+def test_an_unset_greeting_window_leaves_the_input_block_alone():
+    # The field has to cost nothing when it is not used: an agent that never
+    # mentions it must send the same bytes it sent before the field existed.
+    assert protected(None).to_request().input is None
+    assert (
+        protected(None, input=AudioInput(keyterms=["calzone"])).to_request().input
+        == AudioInput(keyterms=["calzone"]).to_dict()
+    )
+
+
+def test_the_greeting_window_is_sent_inside_turn_detection():
+    request = protected(2.0).to_request()
+
+    assert request.input == {
+        "type": "audio",
+        "turn_detection": {"uninterruptible_greeting_seconds": 2.0},
+    }
+
+
+def test_the_greeting_window_joins_an_endpointing_block_already_there():
+    # `extra` is how turn detection is configured today, so the typed field has
+    # to add to that block rather than replace it.
+    request = protected(
+        1.5,
+        input=AudioInput(
+            keyterms=["calzone"], extra={"turn_detection": {"min_silence": 600}}
+        ),
+    ).to_request()
+
+    assert request.input == {
+        "type": "audio",
+        "keyterms": ["calzone"],
+        "turn_detection": {"min_silence": 600, "uninterruptible_greeting_seconds": 1.5},
+    }
+
+
+def test_the_greeting_window_survives_the_update_request_too():
+    # PUT replaces the stored agent rather than merging, so a field missing
+    # from the update body is a field deleted from the row.
+    assert protected(2.0).to_update_request().input == {
+        "type": "audio",
+        "turn_detection": {"uninterruptible_greeting_seconds": 2.0},
+    }
+
+
+def test_an_unset_greeting_window_is_absent_from_the_json_not_null():
+    # Requests are dumped with exclude_none, which is what makes this field safe
+    # to add for anyone pointed at a server that has never heard of it.
+    payload = _create_payload(
+        VoiceAgent(
+            name="Pizza Line", voice="ivy", system_prompt=PROMPT, greeting=GREETING
+        )
+    )
+
+    assert "input" not in payload
+    assert payload == {
+        "name": "Pizza Line",
+        "system_prompt": PROMPT,
+        "greeting": GREETING,
+        "voice": {"voice_id": "ivy"},
+        "platform_tools_enabled": True,
+    }
+
+
+def test_a_set_greeting_window_reaches_the_serialised_payload():
+    payload = _create_payload(protected(2.0))
+
+    assert payload["input"]["turn_detection"]["uninterruptible_greeting_seconds"] == 2.0
+
+
+def test_zero_seconds_is_sent_rather_than_dropped():
+    # 0.0 is the server's own "off", and it is a different statement from
+    # saying nothing: it overwrites whatever the stored row held.
+    payload = _create_payload(protected(0.0))
+
+    assert payload["input"]["turn_detection"]["uninterruptible_greeting_seconds"] == 0.0
+
+
+@pytest.mark.parametrize("seconds", [-0.5, -1.0, 30.1, 120.0])
+def test_a_greeting_window_outside_the_server_range_is_refused(seconds):
+    with pytest.raises(ConfigurationError) as exc_info:
+        protected(seconds)
+
+    message = str(exc_info.value)
+    assert "greeting_uninterruptible_seconds" in message
+    assert "0.0-30.0" in message
+
+
+@pytest.mark.parametrize("seconds", [0.0, 0.5, 30.0])
+def test_the_ends_of_the_range_are_accepted(seconds):
+    assert protected(seconds).greeting_uninterruptible_seconds == seconds
+
+
+def test_a_greeting_window_with_no_greeting_is_refused():
+    # Accepted by the server and then silently inert, which is the failure this
+    # package exists to turn into an error at declaration time.
+    with pytest.raises(ConfigurationError) as exc_info:
+        VoiceAgent(
+            name="Pizza Line",
+            voice="ivy",
+            system_prompt=PROMPT,
+            greeting_uninterruptible_seconds=2.0,
+        )
+
+    message = str(exc_info.value)
+    assert "greeting_uninterruptible_seconds" in message
+    assert "`greeting`" in message
+
+
+def test_setting_the_same_key_through_extra_as_well_is_refused():
+    with pytest.raises(ConfigurationError) as exc_info:
+        protected(
+            2.0,
+            input=AudioInput(
+                extra={"turn_detection": {"uninterruptible_greeting_seconds": 9.0}}
+            ),
+        )
+
+    message = str(exc_info.value)
+    assert "uninterruptible_greeting_seconds" in message
+    assert "twice" in message

@@ -748,10 +748,42 @@ agent = VoiceAgent(
 - Turn detection is passed through `extra`. Fields: `min_silence` (ms, default
   1000), `max_silence` (ms, default 3000), `interrupt_response` (default
   `True`), `interruption_delay`, `vad_threshold` (default 0.5).
+- One turn-detection key has a typed field instead:
+  `greeting_uninterruptible_seconds`, on the agent rather than on `AudioInput`.
+  See *Protecting the greeting from a barge-in* below.
 - `extra` refuses any key the class already models, so a value can never be set
   twice with one silently winning.
 - The voice is set once, at the top level (`voice="ivy"`); `AudioOutput` does
   not model it.
+
+### Protecting the greeting from a barge-in
+
+A caller who starts talking over the greeting interrupts it, and on a noisy
+line that happens before they have heard who they are through to.
+`greeting_uninterruptible_seconds` holds the greeting for that many seconds
+before a barge-in can cut it.
+
+```python
+agent = VoiceAgent(
+    name="Pizza Line",
+    voice="ivy",
+    system_prompt="...",
+    greeting="Pizza Palace — what can I get you?",
+    greeting_uninterruptible_seconds=2.0,
+)
+```
+
+It is a duration and not a switch for a reason. While the greeting is
+protected the caller's speech is **discarded, not queued**: they talk, they are
+talked over, and what they said is never answered and never joins the
+conversation. A duration bounds how much of a caller can be thrown away. The
+range is 0.0 to 30.0 and 0.0 is off. Leave it unset and nothing is sent.
+
+It goes out inside the input block, as
+`input.turn_detection.uninterruptible_greeting_seconds`, so setting the same
+key through `AudioInput(extra={"turn_detection": {...}})` as well is refused.
+`greeting_uninterruptible_seconds` with no `greeting` is refused too — there
+would be nothing to protect.
 
 ## Bring your own LLM
 
