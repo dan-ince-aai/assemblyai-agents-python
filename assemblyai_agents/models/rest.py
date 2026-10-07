@@ -1329,7 +1329,7 @@ class AgentCreateRequest(BaseModel):
     )
     outbound_trunk_id: str | None = Field(
         None,
-        description='SIP trunk used to dial out for human transfers and outbound calls. Required when a human transfer target is configured.',
+        description='Deprecated and ignored: the platform chooses the transfer trunk.',
         title='Outbound Trunk Id',
     )
     caller_id: str | None = Field(
@@ -1390,7 +1390,7 @@ class AgentResponse(BaseModel):
     )
     outbound_trunk_id: str | None = Field(
         None,
-        description='SIP trunk used to dial out for human transfers and outbound calls.',
+        description='Deprecated and ignored: the platform chooses the transfer trunk.',
         title='Outbound Trunk Id',
     )
     caller_id: str | None = Field(
@@ -1463,7 +1463,7 @@ class AgentUpdateRequest(BaseModel):
     )
     outbound_trunk_id: str | None = Field(
         None,
-        description='SIP trunk used to dial out for human transfers and outbound calls. Required when a human transfer target is configured.',
+        description='Deprecated and ignored: the platform chooses the transfer trunk.',
         title='Outbound Trunk Id',
     )
     caller_id: str | None = Field(

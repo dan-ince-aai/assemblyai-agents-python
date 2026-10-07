@@ -1,5 +1,6 @@
 import re
 import textwrap
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -9,7 +10,6 @@ from ._telephony import (
     HumanTransfer,
     PreConnectRequest,
     require_e164,
-    require_trunk_for_transfers,
     validate_pre_connect,
 )
 from ._tool import Tool
@@ -61,13 +61,18 @@ class VoiceAgent:
     It is the only switch, and it is all-or-nothing: there is no way yet to keep
     one platform tool and drop another.
 
-    ``transfer_targets``, ``pre_connect``, ``outbound_trunk_id`` and
-    ``caller_id`` are telephony fields and inert on a WebSocket session. Every
-    rule about them that is decidable without the network is checked here rather
-    than on the round trip: see :class:`HumanTransfer` and
-    :class:`PreConnectRequest` for the traps each carries. Two rules are not
-    decidable here and are left to the server — whether a ``caller_id`` belongs
-    to the account, and whether a target agent exists.
+    ``transfer_targets``, ``pre_connect`` and ``caller_id`` are telephony
+    fields and inert on a WebSocket session. Every rule about them that is
+    decidable without the network is checked here rather than on the round trip:
+    see :class:`HumanTransfer` and :class:`PreConnectRequest` for the traps each
+    carries. Two rules are not decidable here and are left to the server —
+    whether a ``caller_id`` belongs to the account, and whether a target agent
+    exists.
+
+    ``outbound_trunk_id`` is deprecated. The platform chooses the trunk a human
+    transfer dials out on, and the server ignores this field. It is still
+    accepted so existing code keeps building, but setting it warns and it is
+    never sent.
     """
 
     name: str
@@ -102,7 +107,16 @@ class VoiceAgent:
         _require_base_url_with_key(self.llm)
         _require_reasoning_effort_format(self.llm)
         validate_pre_connect(self.pre_connect)
-        require_trunk_for_transfers(self.transfer_targets, self.outbound_trunk_id)
+        if self.outbound_trunk_id is not None:
+            # stacklevel 3 skips this method and the dataclass's generated
+            # __init__, so the warning points at the caller's VoiceAgent(...).
+            warnings.warn(
+                "VoiceAgent(outbound_trunk_id=...) is deprecated and ignored: the "
+                "platform chooses the trunk a human transfer dials out on. Remove "
+                "the argument.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
         if self.caller_id is not None:
             require_e164("caller_id", self.caller_id)
 
@@ -117,7 +131,6 @@ class VoiceAgent:
             tools=self.tool_definitions(),
             pre_connect_requests=self.pre_connect_requests(),
             transfer_targets=self.wire_transfer_targets(),
-            outbound_trunk_id=self.outbound_trunk_id,
             caller_id=self.caller_id,
             llm=None if self.llm is None else [self.llm],
             platform_tools_enabled=self.platform_tools_enabled,
