@@ -68,10 +68,8 @@ class HumanTransfer:
     it. ``platform_tools_enabled=False`` removes it and with it every transfer
     here.
 
-    A human target **requires the agent's ``outbound_trunk_id``**, which is
-    checked when the agent is built. That trunk affects human transfers *only*,
-    despite its own field description on the REST API: an outbound call placed
-    through the calls API uses the platform's own trunk instead.
+    A human target needs no trunk of yours. The platform dials the transfer out
+    over its own trunk, the same way it places an outbound call.
 
     On a **cold** transfer the server silently ignores ``consult_instructions``
     and ``consult_timeout`` and rejects ``record_consult``. All three are
@@ -356,19 +354,6 @@ def _check_hosted_service_budget(entries: list[PreConnectRequest]) -> None:
         f"claims the platform's {UNSET_PRE_CONNECT_TIMEOUT_MS} ms, which is the "
         f"likeliest way to overrun it. To fix: {advice}, or point these requests "
         f"at your own server, which keeps the full reservation."
-    )
-
-
-def require_trunk_for_transfers(
-    targets: Optional[list[HumanTransfer]], outbound_trunk_id: Optional[str]
-) -> None:
-    if not targets or outbound_trunk_id is not None:
-        return
-    named = ", ".join(f"`{target.name}`" for target in targets)
-    raise ConfigurationError(
-        f"transfer targets {named} need an outbound_trunk_id: a human transfer "
-        f"dials out over that trunk, and without one the transfer cannot be "
-        f"placed."
     )
 
 

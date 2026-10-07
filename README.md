@@ -667,7 +667,6 @@ from assemblyai_agents import HumanTransfer
 
 agent = VoiceAgent(
     ...,
-    outbound_trunk_id="trunk_...",     # required whenever a human transfer target exists
     transfer_targets=[
         HumanTransfer(name="front desk", phone_number="+14155550100"),                 # cold
         HumanTransfer(name="on-call", phone_number="+14155550101", mode="warm",
@@ -679,6 +678,10 @@ agent = VoiceAgent(
 
 Numbers must be E.164. The consult fields only apply to a warm transfer and are
 refused on a cold one. Transfer targets are ignored on WebSocket sessions.
+
+A transfer needs no trunk of yours: the platform dials it out over its own.
+`outbound_trunk_id` is deprecated and ignored; setting it raises a
+`DeprecationWarning` and it is not sent.
 
 ### Keypad (DTMF) input
 

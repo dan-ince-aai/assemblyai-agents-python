@@ -60,10 +60,9 @@ def test_a_warm_transfer_carries_the_consult_fields():
     )
 
 
-def test_the_transfer_targets_reach_the_request():
+def test_the_transfer_targets_reach_the_request_without_a_trunk():
     built = agent(
         transfer_targets=[HumanTransfer(name="manager", phone_number="+14155550123")],
-        outbound_trunk_id=TRUNK,
     ).to_request()
 
     assert built.transfer_targets == [
@@ -71,7 +70,26 @@ def test_the_transfer_targets_reach_the_request():
             name="manager", kind="human", phone_number="+14155550123", mode="cold"
         )
     ]
-    assert built.outbound_trunk_id == TRUNK
+    assert "outbound_trunk_id" not in built.model_dump(exclude_none=True)
+
+
+def test_a_trunk_is_deprecated_and_never_sent():
+    with pytest.warns(DeprecationWarning, match="outbound_trunk_id") as caught:
+        declared = agent(
+            transfer_targets=[
+                HumanTransfer(name="manager", phone_number="+14155550123")
+            ],
+            outbound_trunk_id=TRUNK,
+        )
+
+    # The warning points at the line that built the agent, not at the SDK.
+    assert caught[0].filename == __file__
+    assert "outbound_trunk_id" not in declared.to_request().model_dump(
+        exclude_none=True
+    )
+    assert "outbound_trunk_id" not in declared.to_update_request().model_dump(
+        exclude_none=True
+    )
 
 
 @pytest.mark.parametrize("number", ["4155550123", "+0155550123", "+1-415-555-0123", ""])
@@ -118,17 +136,6 @@ def test_an_unknown_transfer_mode_is_refused():
         HumanTransfer(name="manager", phone_number="+14155550123", mode="hot")
 
     assert "mode" in str(exc_info.value)
-
-
-def test_a_transfer_target_without_a_trunk_is_refused():
-    with pytest.raises(ConfigurationError) as exc_info:
-        agent(
-            transfer_targets=[
-                HumanTransfer(name="manager", phone_number="+14155550123")
-            ]
-        )
-
-    assert "outbound_trunk_id" in str(exc_info.value)
 
 
 def test_a_caller_id_that_is_not_e164_is_refused():
