@@ -357,6 +357,25 @@ Deploying replaces the tools AssemblyAI runs for that agent and leaves the ones
 your own server answers alone, so one agent may hold both. A managed tool is the
 one carrying a deployment id on the agent record.
 
+**A managed tool starts when a call needs it, not when you deploy it.** Nothing
+is held running between calls, so the first call of a session can arrive while
+your project is still importing. AssemblyAI waits up to 8 seconds for it, and
+inside that window the call runs normally and you see nothing.
+
+Past it the call is not made. The model is told the tool is not ready and told
+not to guess a result, so the caller hears that rather than an invented answer.
+The start carries on, so a later call in the same session usually succeeds —
+this is a slow first call, not a broken tool. A start that *fails* is the other
+case: that tool is reported unavailable for the rest of the call and is not
+tried again.
+
+What fills that window is work at import time, and importing third-party
+packages is most of it. Keep what a tool always needs at the top of the module
+and move the rest inside the handler, and keep the project's declared
+dependencies to what it actually imports. The same start sits in front of a
+pre-connect request on a hosted service, where the budget is tighter still —
+see *Deploying an application instead of tools*.
+
 ### The command line
 
 Installing the package puts an `assemblyai-agents` command on your path. It
