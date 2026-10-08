@@ -455,6 +455,51 @@ for deployment in client.deployments.list(agent_id="agent_b4c9e0d2..."):
     print(deployment.id, deployment.status.value)
 ```
 
+### Declaring what your project needs installed
+
+Name your Python packages at the top of the uploaded project, either in a
+`requirements.txt` or in a `pyproject.toml` with the `uv.lock` beside it. Both
+files at once is refused, and so is either half of that pair on its own. Only
+the top of the project counts: a `requirements.txt` further down is an ordinary
+file you shipped for your own reasons and is never read as a declaration.
+
+They are installed when you deploy, not when a call arrives, so a set that
+cannot be resolved fails the deployment with `dependencies_failed` rather than
+surfacing mid-call. The resolver's own output is printed under it, which is
+where the package and version it could not satisfy are named.
+
+```text
+# requirements.txt — one version each
+stripe==14.2.0
+```
+
+In a `requirements.txt` every dependency is pinned to a single version; a range,
+a bare name, and an option line such as `-r` or `--index-url` are all refused.
+In a `pyproject.toml` ranges are fine, because the `uv.lock` beside it is
+already the resolution and is what gets installed.
+
+Everything comes from PyPI. A dependency written as a URL, a version-control
+repository or a local path is refused rather than fetched, because a source
+distribution behind one runs its own code while it installs. Publish the package
+and name it by version instead.
+
+`httpx`, `pydantic` and `websockets` are installed for you at fixed versions and
+naming any of them is refused, rather than letting your copy shadow the one this
+package and the runtime share. A project may declare at most 100 packages, and
+at most 2 GiB once installed.
+
+System packages go in a `system-packages.txt` at the top of the project, one
+name per line, at most 20. A line carrying a space, a flag or a shell character
+is refused, because the file is a list of names and never a command. The names
+are the ones the image's own distribution uses, which is Wolfi, so a Debian name
+may not exist under that spelling — look the package up rather than translating
+it.
+
+```text
+# system-packages.txt
+ffmpeg
+```
+
 ### Deploying an application instead of tools
 
 The same upload can be run a second way. `--type service` runs your project as a
