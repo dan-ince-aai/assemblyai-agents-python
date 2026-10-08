@@ -776,7 +776,7 @@ class AgentDeploymentListItem(BaseModel):
     )
     service_url: str | None = Field(
         None,
-        description="Where a `service` deployment answers. Set this as the agent's model endpoint to route the agent through it. Null for a `tools` deployment, and null for a `service` that has not reached `ready`.",
+        description="Where a `service` deployment answers, for your own diagnostics. Nothing needs to be configured with it: an agent whose newest `ready` service deployment this is already runs its model through it. Null for a `tools` deployment, and null for a `service` that has not reached `ready`.",
         title='Service Url',
     )
     detail: str | None = Field(
@@ -826,7 +826,7 @@ class AgentDeploymentResponse(BaseModel):
     )
     service_url: str | None = Field(
         None,
-        description="Where a `service` deployment answers. Set this as the agent's model endpoint to route the agent through it. Null for a `tools` deployment, and null for a `service` that has not reached `ready`.",
+        description="Where a `service` deployment answers, for your own diagnostics. Nothing needs to be configured with it: an agent whose newest `ready` service deployment this is already runs its model through it. Null for a `tools` deployment, and null for a `service` that has not reached `ready`.",
         title='Service Url',
     )
     detail: str | None = Field(
