@@ -42,6 +42,17 @@ def test_ws_models_import_and_key_types():
     assert _enum_member_count(code_field.annotation) == 16
 
 
+def test_the_service_address_is_never_described_as_something_to_set():
+    # A deployment's own address names one deployment and stops answering when
+    # the next supersedes it, so `_urls.py` refuses it on a tool and the API
+    # refuses the write. A description telling a customer to configure it sends
+    # them to the one address the rest of the package exists to turn down.
+    for model in (rest.AgentDeploymentResponse, rest.AgentDeploymentListItem):
+        description = model.model_fields["service_url"].description
+        assert "Nothing needs to be configured with it" in description
+        assert "Set this as" not in description
+
+
 def test_no_future_import_in_generated_models():
     assert "from __future__" not in Path(rest.__file__).read_text()
     assert "from __future__" not in Path(ws.__file__).read_text()
