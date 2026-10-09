@@ -197,9 +197,14 @@ def _print_packing(
     path: str, project: _project.Project, archive: bytes, out: TextIO
 ) -> None:
     digest = hashlib.sha256(archive).hexdigest()
+    count = len(project.files)
+    # The files, not the tar they go in: `tarfile` pads its output to a whole
+    # 10,240 byte record, so the archive length reads 10,240 for every project
+    # that fits in one and tells the customer nothing about what they packed.
+    packed = sum(len(body) for body in project.files.values())
     print(
-        f"Packed {len(project.files)} files from {path}, {len(archive):,} bytes "
-        f"(sha256 {digest[:12]}).",
+        f"Packed {count} file{'' if count == 1 else 's'} from {path}, "
+        f"{packed:,} bytes (sha256 {digest[:12]}).",
         file=out,
     )
     if project.excluded:

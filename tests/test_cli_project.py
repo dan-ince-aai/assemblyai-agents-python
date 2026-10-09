@@ -502,3 +502,54 @@ def test_a_nested_env_file_still_gets_the_pointer_to_secrets(tmp_path):
 
     assert "pkg/deep/.env" in out.getvalue()
     assert "secrets set" in out.getvalue()
+
+
+def test_one_file_is_counted_in_the_singular(tmp_path):
+    """The count is read by a customer, so a project of one file says so."""
+    write(tmp_path, "main.py", ENTRY)
+    out = io.StringIO()
+
+    _cli.read_upload(str(tmp_path), out)
+
+    assert "Packed 1 file from" in out.getvalue()
+
+
+def test_several_files_are_counted_in_the_plural(tmp_path):
+    make_project(tmp_path)
+    out = io.StringIO()
+
+    _cli.read_upload(str(tmp_path), out)
+
+    assert "Packed 4 files from" in out.getvalue()
+
+
+def test_the_printed_size_is_what_the_files_hold(tmp_path):
+    """Not the size of the tar, which pads every small project to one 10,240
+    byte record and so reads the same whatever the project holds."""
+    write(tmp_path, "main.py", ENTRY)
+    out = io.StringIO()
+
+    _cli.read_upload(str(tmp_path), out)
+
+    assert f"{len(ENTRY.encode('utf-8')):,} bytes" in out.getvalue()
+
+
+def test_adding_a_file_changes_the_printed_size(tmp_path):
+    """The fault a customer saw: two different projects, both reported as
+    10,240 bytes, because tar padding hid the difference."""
+    write(tmp_path, "main.py", ENTRY)
+    one = io.StringIO()
+    _cli.read_upload(str(tmp_path), one)
+
+    write(tmp_path, "pkg/deep/arithmetic.py", NESTED)
+    write(tmp_path, "pkg/__init__.py")
+    write(tmp_path, "pkg/deep/__init__.py")
+    two = io.StringIO()
+    _cli.read_upload(str(tmp_path), two)
+
+    assert _size_printed(one.getvalue()) < _size_printed(two.getvalue())
+
+
+def _size_printed(output: str) -> int:
+    first = output.splitlines()[0]
+    return int(first.split(", ")[1].split(" bytes")[0].replace(",", ""))

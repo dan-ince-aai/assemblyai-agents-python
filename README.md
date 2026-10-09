@@ -384,7 +384,7 @@ path.
 
 ```console
 $ assemblyai-agents deploy ./orders --agent agent_b4c9e0d2...
-Packed 6 files from ./orders, 10,240 bytes (sha256 953ef5687846).
+Packed 6 files from ./orders, 7,412 bytes (sha256 953ef5687846).
 Not uploaded:
   .env — an environment file, which never travels
   Credentials belong in assemblyai-agents secrets set NAME, which your tools read back with ctx.secret("NAME").
@@ -509,7 +509,7 @@ you get is never guessed from the code, because one project can hold both.
 
 ```console
 $ assemblyai-agents deploy ./collections --agent agent_b4c9e0d2... --type service
-Packed 42 files from ./collections, 688,128 bytes (sha256 8c41d0b6f2a7).
+Packed 42 files from ./collections, 206,418 bytes (sha256 8c41d0b6f2a7).
 Deploying ./collections to agent agent_b4c9e0d2... as a service.
 Created deployment agentdep_cc3b6476...
   pending (0s)
