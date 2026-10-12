@@ -405,9 +405,7 @@ def deploy(
     if status == STATUS_READY:
         print(f"Deployed in {_format_elapsed(elapsed)}.", file=out)
         if deployment_type == TYPE_SERVICE:
-            _print_service_ready(
-                body.get("service_url"), deployment_id, path, agent_id, out, err
-            )
+            _print_service_ready(deployment_id, path, agent_id, out)
         else:
             print(
                 f"AssemblyAI is now running the tools in {path} for agent "
@@ -421,12 +419,7 @@ def deploy(
 
 
 def _print_service_ready(
-    service_url: Optional[str],
-    deployment_id: str,
-    path: str,
-    agent_id: str,
-    out: TextIO,
-    err: TextIO,
+    deployment_id: str, path: str, agent_id: str, out: TextIO
 ) -> None:
     """What a customer can act on: the deployment, and how to address it.
 
@@ -434,19 +427,10 @@ def _print_service_ready(
     this deployment and dies with it, the API refuses it on an agent, and every
     way of reaching the service resolves it per call from the agent ID instead,
     so printing it offers nothing that can be written down and one thing that
-    cannot. A ready service the server reported no address for is the server
-    contradicting itself and is still worth saying, because sessions on this
-    agent have nothing to resolve to.
+    cannot. A ready service often has no address at all: one started separately
+    for each call has none to report, and sessions reach it from the agent ID
+    all the same, so a missing `service_url` is not a fault and says nothing.
     """
-    if not service_url:
-        print(
-            f"AssemblyAI is running {path} for agent {agent_id} as deployment "
-            f"{deployment_id}, but reported no address for it, so a session on "
-            f"this agent has nothing to resolve to. Quote that deployment ID to "
-            f"support.",
-            file=err,
-        )
-        return
     print(
         f"AssemblyAI is now running {path} for agent {agent_id} as deployment "
         f"{deployment_id}.",

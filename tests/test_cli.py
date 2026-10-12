@@ -425,11 +425,11 @@ def test_a_service_deploy_gives_the_path_form_for_a_tool(make_client, recorder):
     assert "after every deploy" not in out
 
 
-def test_a_ready_service_with_no_address_says_what_that_costs(make_client, recorder):
-    # Nothing is printed for the customer to copy either way, but a ready
-    # service the server gave no address for is one a session cannot resolve,
-    # so it is still worth saying — keyed on the deployment, not the address.
-    code, _, errs, _ = _run_deploy(
+def test_a_ready_service_with_no_address_is_a_normal_success(make_client, recorder):
+    # A service started separately for each call has no standing address, so
+    # the server reports none. Sessions still reach it from the agent ID, so the
+    # deploy reads as the success it is: no warning, the usual instructions.
+    code, out, errs, _ = _run_deploy(
         make_client,
         recorder,
         [
@@ -440,12 +440,11 @@ def test_a_ready_service_with_no_address_says_what_that_costs(make_client, recor
     )
 
     assert code == 0
-    assert "reported no address" in errs
-    assert "nothing to resolve to" in errs
-    assert DEPLOYMENT_ID in errs
-    # It no longer sends them to `deployments status` to read an address that
-    # command no longer prints.
-    assert "deployments status" not in errs
+    assert errs == ""
+    assert DEPLOYMENT_ID in out
+    assert "AssemblyAI is now running" in out
+    assert "the path alone" in out
+    assert "nothing to resolve to" not in out
 
 
 def test_a_status_newer_than_this_package_stops_waiting_without_a_traceback(
