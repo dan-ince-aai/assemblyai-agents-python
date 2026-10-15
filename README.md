@@ -1062,8 +1062,19 @@ short-lived token, opens the WebSocket, binds the agent, streams the microphone
 in and plays replies out (with barge-in), and answers `tool.call` events for
 client-resident tools with the functions in `tools=`. Callbacks: `on_ready`,
 `on_user_transcript`, `on_agent_transcript`, `on_agent_delta`, `on_agent_audio`,
-`on_error`, `on_reply_error`. Pass `audio=False` to disable device audio and handle `reply.audio`
+`on_error`, `on_reply_error`, `on_reply_rejected`. Pass `audio=False` to disable device audio and handle `reply.audio`
 events yourself.
+
+`await agent.say("Your order shipped.")` makes the agent say exactly that line,
+word for word, once it can do so without talking over the caller. It sends
+`reply.create` with `text` and adds nothing else to the conversation. Pass
+`request_id="..."` to match a refusal to the line: a line the server will not
+speak arrives at `on_reply_rejected` with that id and a `reason`.
+
+This needs a server that supports speaking text. A server without it ignores
+the `text` field without an error, and the agent answers in its own words
+instead. Before this release, `say()` sent a user message, which servers either
+dropped or treated as something the caller said; it never spoke the line.
 
 For your own transport (a browser, a telephony bridge, a test harness) use the
 session it is built on:
@@ -1104,10 +1115,14 @@ asyncio.run(main())
 
 Client → server methods: `update(...)`, `send_audio(pcm_bytes)`,
 `send_tool_result(call_id, result, is_error=False)`, `send_message(text, role="user")`,
-`create_reply(instructions=None)`, `cancel_reply(reply_id)`, `resume(session_id)`,
-`end()`. `send_message` appends a message to the conversation history and
-`create_reply` asks the agent to speak, optionally steered by `instructions`;
-neither is needed on a normal audio session.
+`create_reply(instructions=None, text=None, request_id=None)`, `cancel_reply(reply_id)`,
+`resume(session_id)`, `end()`. `send_message` adds a message to the conversation
+history without asking for a reply, so nothing is spoken; it only has an effect
+once the server supports adding to the history, and until then the message is
+dropped. `create_reply` asks the agent to speak, optionally steered by
+`instructions`; with `text` instead, the agent says exactly that line (on a
+server that supports it; an older one ignores `text` and the agent answers in
+its own words). Neither is needed on a normal audio session.
 
 Server → client events (all pydantic models in `assemblyai_agents.models.ws`):
 
@@ -1120,6 +1135,7 @@ Server → client events (all pydantic models in `assemblyai_agents.models.ws`):
 | `input.speech.started` / `.stopped` | `InputSpeechStarted` / `InputSpeechStopped` | barge-in cue |
 | `reply.started` / `reply.audio` / `reply.done` | `ReplyStarted` / `ReplyAudio` / `ReplyDone` | `ReplyAudio.data` is base64 PCM |
 | `reply.error` | `ReplyError` | your LLM request failed: `code` (`llm_request_rejected`, `llm_provider_error`, `llm_rate_limited`, `llm_timeout`, `llm_endpoint_blocked`, `llm_unreachable`; open set), `message`, `status_code`, `retryable` |
+| `reply.rejected` | `ReplyRejected` | a `reply.create` or `reply.cancel` was refused, so nothing was spoken or stopped: `request_id` (yours, or `None`), `reason` (`invalid`, `not_ready`, `unsupported`, `no_quiet_moment`, `too_many_pending`, `session_ending`, `speak_failed`, `reply_not_running`; open set, so treat an unknown one as refused), `message`. An older server never sends it |
 | `tool.call` | `ToolCall` | `call_id`, `name`, `arguments` |
 | `transcript.user` | `TranscriptUser` | final user turn |
 | `transcript.agent` / `.delta` | `TranscriptAgent` / `TranscriptAgentDelta` | final and streaming agent text |

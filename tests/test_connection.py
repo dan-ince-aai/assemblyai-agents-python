@@ -19,6 +19,7 @@ from assemblyai_agents.models.ws import (
     ReplyAudio,
     ReplyDone,
     ReplyError,
+    ReplyRejected,
     ReplyStarted,
     SessionEnded,
     ToolCall,
@@ -102,6 +103,7 @@ class FakeSession:
         self.updates = []
         self.tool_results = []
         self.messages = []
+        self.replies = []
         self.audio_sent = []
         self.end_calls = 0
         self.close_calls = 0
@@ -137,6 +139,11 @@ class FakeSession:
 
     async def send_message(self, content, *, role="user"):
         self.messages.append({"content": content, "role": role})
+
+    async def create_reply(self, instructions=None, *, text=None, request_id=None):
+        self.replies.append(
+            {"instructions": instructions, "text": text, "request_id": request_id}
+        )
 
     async def send_audio(self, audio):
         self.audio_sent.append(bytes(audio))
@@ -779,5 +786,49 @@ async def test_reply_error_reaches_on_reply_error_not_on_error(monkeypatch):
         await agent.run()
 
     assert reply_errors == [failure]
+    assert session_errors == []
+    assert users == ["still here"]
+
+
+async def test_say_asks_for_the_exact_line_and_adds_no_message():
+    agent, _, session, _ = _make_agent([], audio=False)
+
+    async with agent:
+        await agent.say("Your order shipped.")
+        await agent.say("One moment.", request_id="c1")
+
+    assert session.replies == [
+        {"instructions": None, "text": "Your order shipped.", "request_id": None},
+        {"instructions": None, "text": "One moment.", "request_id": "c1"},
+    ]
+    # say() used to send a user message, which a server either dropped or took
+    # as something the caller said. It must not send one any more.
+    assert session.messages == []
+
+
+async def test_reply_rejected_reaches_on_reply_rejected_not_on_error():
+    rejected, reply_errors, session_errors = [], [], []
+    refusal = ReplyRejected(
+        request_id="c1",
+        reason="no_quiet_moment",
+        message="There was no quiet moment to speak within 10 seconds.",
+    )
+    events = [
+        refusal,
+        TranscriptUser(item_id="u2", text="still here"),
+        SessionEnded(session_duration_seconds=1.0),
+    ]
+    agent, _, _, _ = _make_agent(events, audio=False)
+    agent.on_reply_rejected(rejected.append)
+    agent.on_reply_error(reply_errors.append)
+    agent.on_error(session_errors.append)
+    users = []
+    agent.on_user_transcript(users.append)
+
+    async with agent:
+        await agent.run()
+
+    assert rejected == [refusal]
+    assert reply_errors == []
     assert session_errors == []
     assert users == ["still here"]
