@@ -4,7 +4,7 @@
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, constr
 
 
 class Type(Enum):
@@ -122,6 +122,7 @@ class Type7(Enum):
 
 class ReplyCancel(BaseModel):
     reply_id: str
+    request_id: constr(min_length=1, max_length=64) | None = None
     type: Type7
 
 
@@ -131,6 +132,8 @@ class Type8(Enum):
 
 class ReplyCreate(BaseModel):
     instructions: str | None = None
+    request_id: constr(min_length=1, max_length=64) | None = None
+    text: str | None = None
     type: Type8
 
 
@@ -167,6 +170,18 @@ class ReplyError(BaseModel):
 
 
 class Type11(Enum):
+    reply_rejected = 'reply.rejected'
+
+
+class ReplyRejected(BaseModel):
+    message: str
+    reason: str
+    request_id: str | None
+    timestamp: float | None = None
+    type: Type11 | None = 'reply.rejected'
+
+
+class Type12(Enum):
     reply_started = 'reply.started'
 
 
@@ -174,18 +189,18 @@ class ReplyStarted(BaseModel):
     item_id: str
     reply_id: str
     timestamp: float | None = None
-    type: Type11 | None = 'reply.started'
+    type: Type12 | None = 'reply.started'
 
 
-class Type12(Enum):
+class Type13(Enum):
     session_end = 'session.end'
 
 
 class SessionEnd(BaseModel):
-    type: Type12
+    type: Type13
 
 
-class Type13(Enum):
+class Type14(Enum):
     session_ended = 'session.ended'
 
 
@@ -193,7 +208,7 @@ class SessionEnded(BaseModel):
     audio_duration_seconds: float | None = None
     session_duration_seconds: float
     timestamp: float | None = None
-    type: Type13 | None = 'session.ended'
+    type: Type14 | None = 'session.ended'
 
 
 class Code(Enum):
@@ -215,7 +230,7 @@ class Code(Enum):
     unauthorized = 'unauthorized'
 
 
-class Type14(Enum):
+class Type15(Enum):
     session_error = 'session.error'
 
 
@@ -225,31 +240,31 @@ class SessionError(BaseModel):
     param: str | None = None
     session_id: str | None = None
     timestamp: float | None = None
-    type: Type14 | None = 'session.error'
-
-
-class Type15(Enum):
-    session_ready = 'session.ready'
+    type: Type15 | None = 'session.error'
 
 
 class Type16(Enum):
+    session_ready = 'session.ready'
+
+
+class Type17(Enum):
     session_resume = 'session.resume'
 
 
 class SessionResume(BaseModel):
     session_id: str
-    type: Type16
-
-
-class Type17(Enum):
-    session_update = 'session.update'
+    type: Type17
 
 
 class Type18(Enum):
-    session_updated = 'session.updated'
+    session_update = 'session.update'
 
 
 class Type19(Enum):
+    session_updated = 'session.updated'
+
+
+class Type20(Enum):
     text = 'text'
 
 
@@ -266,30 +281,30 @@ class ExecutionMode(Enum):
     interactive = 'interactive'
 
 
-class Type21(Enum):
+class Type22(Enum):
     function = 'function'
 
 
-class Type22(Enum):
+class Type23(Enum):
     tool_call = 'tool.call'
 
 
 class ToolCall(BaseModel):
-    arguments: Any
+    arguments: Any | None = None
     call_id: str
     name: str
     timestamp: float | None = None
-    type: Type22 | None = 'tool.call'
+    type: Type23 | None = 'tool.call'
 
 
-class Type23(Enum):
+class Type24(Enum):
     object = 'object'
 
 
 class ToolParameters(BaseModel):
     properties: dict[str, Any] | None = {}
     required: list[str] | None = []
-    type: Type23 | None = 'object'
+    type: Type24 | None = 'object'
 
 
 class ToolResponseInstructions(BaseModel):
@@ -297,7 +312,7 @@ class ToolResponseInstructions(BaseModel):
     success: str | None = None
 
 
-class Type24(Enum):
+class Type25(Enum):
     tool_result = 'tool.result'
 
 
@@ -305,14 +320,14 @@ class ToolResult(BaseModel):
     call_id: str
     is_error: bool | None = False
     result: str
-    type: Type24
+    type: Type25
 
 
 class ToolSessionUpdate(BaseModel):
     enabled: bool | None = False
 
 
-class Type25(Enum):
+class Type26(Enum):
     transcript_agent = 'transcript.agent'
 
 
@@ -322,10 +337,10 @@ class TranscriptAgent(BaseModel):
     reply_id: str
     text: str
     timestamp: float | None = None
-    type: Type25 | None = 'transcript.agent'
+    type: Type26 | None = 'transcript.agent'
 
 
-class Type26(Enum):
+class Type27(Enum):
     transcript_agent_delta = 'transcript.agent.delta'
 
 
@@ -336,10 +351,10 @@ class TranscriptAgentDelta(BaseModel):
     reply_id: str
     start_ms: int | None
     timestamp: float | None = None
-    type: Type26 | None = 'transcript.agent.delta'
+    type: Type27 | None = 'transcript.agent.delta'
 
 
-class Type27(Enum):
+class Type28(Enum):
     transcript_user = 'transcript.user'
 
 
@@ -347,10 +362,10 @@ class TranscriptUser(BaseModel):
     item_id: str
     text: str
     timestamp: float | None = None
-    type: Type27 | None = 'transcript.user'
+    type: Type28 | None = 'transcript.user'
 
 
-class Type28(Enum):
+class Type29(Enum):
     transcript_user_delta = 'transcript.user.delta'
 
 
@@ -358,10 +373,10 @@ class TranscriptUserDelta(BaseModel):
     item_id: str
     text: str
     timestamp: float | None = None
-    type: Type28 | None = 'transcript.user.delta'
+    type: Type29 | None = 'transcript.user.delta'
 
 
-class Type29(Enum):
+class Type30(Enum):
     semantic_vad = 'semantic_vad'
     server_vad = 'server_vad'
 
@@ -371,7 +386,7 @@ class TurnDetectionConfig(BaseModel):
     interruption_delay: int | None = None
     max_silence: int | None = 3000
     min_silence: int | None = 1000
-    type: Type29 | None = None
+    type: Type30 | None = None
     uninterruptible_turns: list[str] | None = []
     vad_threshold: float | None = 0.5
 
@@ -444,7 +459,7 @@ class Tool(BaseModel):
     response_instructions: ToolResponseInstructions | None = None
     session_update: ToolSessionUpdate | None = None
     timeout_seconds: float | None = 120.0
-    type: Type21
+    type: Type22
 
 
 class SessionConfig(BaseModel):
@@ -466,15 +481,15 @@ class SessionReady(BaseModel):
     resume_token: str | None = ''
     session_id: str
     timestamp: float | None = None
-    type: Type15 | None = 'session.ready'
+    type: Type16 | None = 'session.ready'
 
 
 class SessionUpdate(BaseModel):
     session: SessionUpdatePayload | None = None
-    type: Type17
+    type: Type18
 
 
 class SessionUpdatedEvent(BaseModel):
     config: SessionConfig
     timestamp: float | None = None
-    type: Type18 | None = 'session.updated'
+    type: Type19 | None = 'session.updated'

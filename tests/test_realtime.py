@@ -13,8 +13,10 @@ from assemblyai_agents.models.ws import (
     InputSpeechStarted,
     InputSpeechStopped,
     ReplyAudio,
+    ReplyCreate,
     ReplyDone,
     ReplyError,
+    ReplyRejected,
     ReplyStarted,
     SessionEnded,
     SessionError,
@@ -190,6 +192,13 @@ async def test_send_methods_emit_frames(monkeypatch):
     assert fake.last_json == {
         "type": "reply.create",
         "instructions": "speak slowly",
+    }
+    # ... and carries the exact line to speak, with the caller's own id.
+    await session.create_reply(text="Your table is booked.", request_id="c2")
+    assert fake.last_json == {
+        "type": "reply.create",
+        "text": "Your table is booked.",
+        "request_id": "c2",
     }
 
     # send_tool_result defaults is_error to False.
@@ -793,6 +802,71 @@ async def test_an_sdk_without_reply_error_skips_it_and_carries_on(monkeypatch):
     assert isinstance(received[0], UnknownEvent)
     assert received[0].type == "reply.error"
     assert isinstance(received[1], ReplyDone)
+
+
+_REPLY_REJECTED = {
+    "type": "reply.rejected",
+    "request_id": "c2",
+    "reason": "no_quiet_moment",
+    "message": "There was no quiet moment to speak within 10 seconds.",
+    "timestamp": 1700000000.5,
+}
+
+
+@pytest.mark.asyncio
+async def test_reply_rejected_parses_to_its_model(monkeypatch):
+    # A refusal of a create that had no id carries a null request_id, and a
+    # reason added later is still a refusal, not a parse failure.
+    no_id = {**_REPLY_REJECTED, "request_id": None, "reason": "invalid"}
+    future_reason = {**_REPLY_REJECTED, "reason": "some_future_reason"}
+    fake = FakeConnection(
+        inbound=[
+            _frame(_REPLY_REJECTED),
+            _frame(no_id),
+            _frame(future_reason),
+            _frame(_AFTER),
+        ]
+    )
+    session, _ = await _open_session(monkeypatch, fake)
+
+    received = [event async for event in session]
+    assert isinstance(received[0], ReplyRejected)
+    assert received[0].request_id == "c2"
+    assert received[0].reason == "no_quiet_moment"
+    assert isinstance(received[1], ReplyRejected)
+    assert received[1].request_id is None
+    assert isinstance(received[2], ReplyRejected)
+    assert received[2].reason == "some_future_reason"
+    assert isinstance(received[3], ReplyDone)
+
+
+def test_reply_create_model_carries_text_and_request_id():
+    frame = ReplyCreate.model_validate(
+        {"type": "reply.create", "text": "Hello.", "request_id": "c1"}
+    )
+    assert frame.text == "Hello."
+    assert frame.request_id == "c1"
+    assert ReplyCreate.model_validate({"type": "reply.create"}).text is None
+    # The server bounds the id to 1 to 64 characters, and so does the model.
+    with pytest.raises(ValueError):
+        ReplyCreate.model_validate({"type": "reply.create", "request_id": "x" * 65})
+
+
+@pytest.mark.asyncio
+async def test_a_server_that_never_rejects_is_unchanged(monkeypatch):
+    # An older server ignores the text and answers in the agent's own words. It
+    # never sends reply.rejected, and the stream reads exactly as before.
+    fake = FakeConnection(
+        inbound=[
+            _frame({"type": "reply.started", "reply_id": "r1", "item_id": "i1"}),
+            _frame(_AFTER),
+        ]
+    )
+    session, _ = await _open_session(monkeypatch, fake)
+    await session.create_reply(text="Your table is booked.")
+
+    received = [event async for event in session]
+    assert [type(event) for event in received] == [ReplyStarted, ReplyDone]
 
 
 def test_uninterruptible_turns_survives_the_session_config_read_back():

@@ -17,6 +17,7 @@ from .models.ws import (
     ReplyAudio,
     ReplyDone,
     ReplyError,
+    ReplyRejected,
     ReplyStarted,
     SessionEnded,
     SessionError,
@@ -58,6 +59,7 @@ _SERVER_EVENTS: dict[str, type[BaseModel]] = {
     "reply.audio": ReplyAudio,
     "reply.done": ReplyDone,
     "reply.error": ReplyError,
+    "reply.rejected": ReplyRejected,
     "reply.started": ReplyStarted,
     "tool.call": ToolCall,
     "transcript.user": TranscriptUser,
@@ -153,10 +155,28 @@ class AsyncRealtimeSession:
     async def cancel_reply(self, reply_id: str) -> None:
         await self._send({"type": "reply.cancel", "reply_id": reply_id})
 
-    async def create_reply(self, instructions: Optional[str] = None) -> None:
+    async def create_reply(
+        self,
+        instructions: Optional[str] = None,
+        *,
+        text: Optional[str] = None,
+        request_id: Optional[str] = None,
+    ) -> None:
+        """Ask the agent to speak.
+
+        With ``text``, the agent says exactly that line, once it can do so
+        without talking over the caller. A server without that support ignores
+        ``text`` and the agent answers in its own words instead, with no error.
+        A refused request comes back as ``reply.rejected`` carrying
+        ``request_id``.
+        """
         payload: dict = {"type": "reply.create"}
         if instructions is not None:
             payload["instructions"] = instructions
+        if text is not None:
+            payload["text"] = text
+        if request_id is not None:
+            payload["request_id"] = request_id
         await self._send(payload)
 
     async def send_tool_result(
@@ -172,6 +192,11 @@ class AsyncRealtimeSession:
         )
 
     async def send_message(self, content: str, *, role: str = "user") -> None:
+        """Add a message to the conversation history without asking for a reply.
+
+        Nothing is spoken. This only has an effect once the server supports
+        adding to the history; until then the message is dropped.
+        """
         await self._send(
             {"type": "conversation.message", "role": role, "content": content}
         )

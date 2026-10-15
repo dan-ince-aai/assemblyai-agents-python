@@ -10,6 +10,7 @@ from .audio_io import DeviceAudioError, PlaybackSink, microphone_stream
 from .models.ws import (
     ReplyAudio,
     ReplyError,
+    ReplyRejected,
     SessionEnded,
     SessionError,
     SessionReady,
@@ -101,6 +102,7 @@ class AgentConnection:
             "agent_audio": [],
             "error": [],
             "reply_error": [],
+            "reply_rejected": [],
         }
 
     def _register(self, slot: str, fn: Callable) -> Callable:
@@ -129,6 +131,11 @@ class AgentConnection:
     def on_reply_error(self, fn: Callable) -> Callable:
         # One reply failed (the agent's own LLM request); the session goes on.
         return self._register("reply_error", fn)
+
+    def on_reply_rejected(self, fn: Callable) -> Callable:
+        # A reply.create (such as one from say()) or reply.cancel was refused;
+        # nothing was spoken or stopped, and the session goes on.
+        return self._register("reply_rejected", fn)
 
     def tool(self, name: str) -> Callable[[Callable], Callable]:
         def _decorator(fn: Callable) -> Callable:
@@ -287,13 +294,23 @@ class AgentConnection:
             await self._fan_out("error", event)
         elif isinstance(event, ReplyError):
             await self._fan_out("reply_error", event)
+        elif isinstance(event, ReplyRejected):
+            await self._fan_out("reply_rejected", event)
 
     async def _fan_out(self, slot: str, value: Any) -> None:
         for fn in self._callbacks[slot]:
             await _maybe_await(fn(value))
 
-    async def say(self, text: str) -> None:
-        await self._session.send_message(text)
+    async def say(self, text: str, *, request_id: Optional[str] = None) -> None:
+        """Have the agent speak ``text`` word for word.
+
+        Sends ``reply.create`` with ``text``. A server that does not support
+        speaking text yet ignores the field without an error, and the agent
+        answers in its own words instead. A refusal (say, no quiet moment to
+        speak in) reaches ``on_reply_rejected`` carrying ``request_id``. To add
+        to the history without speaking, use ``session.send_message``.
+        """
+        await self._session.create_reply(text=text, request_id=request_id)
 
     @property
     def session(self) -> AsyncRealtimeSession:
